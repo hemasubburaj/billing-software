@@ -5,6 +5,16 @@ import dotenv from "dotenv";
 import authRoutes from "./routes/auth.js";
 import storageRoutes from "./routes/storage.js";
 
+
+
+app.get("/api", (req, res) => {
+  res.json({ message: "Billing API is running" });
+});
+
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true });
+});
+
 dotenv.config();
 
 const app = express();
