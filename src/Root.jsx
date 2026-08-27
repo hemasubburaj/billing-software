@@ -76,3 +76,21 @@ const logoutBtnStyle = {
   cursor: "pointer",
   color: "#F1E9D8",
 };
+export const apiStorage = {
+  getItem(key) {
+    const data = localStorage.getItem(key);
+    return data;
+  },
+
+  setItem(key, value) {
+    localStorage.setItem(key, value);
+  },
+
+  removeItem(key) {
+    localStorage.removeItem(key);
+  },
+
+  clear() {
+    localStorage.clear();
+  },
+};

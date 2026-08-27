@@ -1,3 +1,7 @@
+
+import { getToken, getUsername, clearSession, apiStorage } from "./api.js";
+
+
 const API_BASE =
   import.meta.env.VITE_API_URL ||
   "https://billing-software-wlvw.onrender.com/api";
