@@ -115,6 +115,7 @@ export default function App() {
   const [discountPct, setDiscountPct] = useState(0);
   const [taxType, setTaxType] = useState("intra");
   const [selectedAgentId, setSelectedAgentId] = useState("");
+  const [customGstPct, setCustomGstPct] = useState("");
   const [productQuery, setProductQuery] = useState("");
   const [viewInvoice, setViewInvoice] = useState(null);
   const [viewQuotation, setViewQuotation] = useState(null);
@@ -238,9 +239,14 @@ export default function App() {
   const subtotal = cart.reduce((s, c) => s + lineTotal(c), 0);
   const discountAmt = (subtotal * (Number(discountPct) || 0)) / 100;
   const taxable = Math.max(0, subtotal - discountAmt);
-  const cgstAmt = settings.gstEnabled && taxType === "intra" ? (taxable * (Number(settings.cgstRate) || 0)) / 100 : 0;
-  const sgstAmt = settings.gstEnabled && taxType === "intra" ? (taxable * (Number(settings.sgstRate) || 0)) / 100 : 0;
-  const igstAmt = settings.gstEnabled && taxType === "inter" ? (taxable * (Number(settings.igstRate) || 0)) / 100 : 0;
+  const effectiveGstPct = customGstPct !== ""
+    ? Number(customGstPct) || 0
+    : (taxType === "intra"
+        ? (Number(settings.cgstRate) || 0) + (Number(settings.sgstRate) || 0)
+        : (Number(settings.igstRate) || 0));
+  const cgstAmt = settings.gstEnabled && taxType === "intra" ? (taxable * effectiveGstPct) / 2 / 100 : 0;
+  const sgstAmt = settings.gstEnabled && taxType === "intra" ? (taxable * effectiveGstPct) / 2 / 100 : 0;
+  const igstAmt = settings.gstEnabled && taxType === "inter" ? (taxable * effectiveGstPct) / 100 : 0;
   const grandTotal = taxable + cgstAmt + sgstAmt + igstAmt;
 
   function nextQuoteNo() {
@@ -494,6 +500,7 @@ export default function App() {
             customerType, setCustomerType, customerName, setCustomerName, customerPhone, setCustomerPhone, customerPlace, setCustomerPlace, customers,
             discountPct, setDiscountPct, subtotal, discountAmt, taxable, cgstAmt, sgstAmt, igstAmt, taxType, setTaxType,
             grandTotal, saveQuotation, settings, agents, selectedAgentId, setSelectedAgentId, addProduct, units,
+            customGstPct, setCustomGstPct,
           }} />
         )}
         {tab === "quotations" && (
@@ -686,6 +693,7 @@ function BillTab(props) {
     customerType, setCustomerType, customerName, setCustomerName, customerPhone, setCustomerPhone, customerPlace, setCustomerPlace, customers,
     discountPct, setDiscountPct, subtotal, discountAmt, cgstAmt, sgstAmt, igstAmt, taxType, setTaxType,
     grandTotal, saveQuotation, settings, agents, selectedAgentId, setSelectedAgentId, addProduct, units,
+    customGstPct, setCustomGstPct,
   } = props;
 
   const [showNewProduct, setShowNewProduct] = useState(false);
@@ -843,7 +851,20 @@ function BillTab(props) {
           <div className="totalrow"><span>Subtotal</span><span className="mono">{fmt(subtotal)}</span></div>
           <div className="totalrow"><span>Discount</span><span className="mono">-{fmt(discountAmt)}</span></div>
           {settings.gstEnabled && (
-            <div className="totalrow"><span>GST ({gstRate}%)</span><span className="mono">{fmt(gstAmt)}</span></div>
+            <div className="totalrow">
+              <span>
+                GST %{" "}
+                <input
+                  type="number"
+                  min="0"
+                  placeholder={gstRate}
+                  value={customGstPct}
+                  onChange={(e) => setCustomGstPct(e.target.value)}
+                  style={{ width: 50, padding: "2px 5px", fontSize: 11.5, textAlign: "right", marginLeft: 4 }}
+                />
+              </span>
+              <span className="mono">{fmt(gstAmt)}</span>
+            </div>
           )}
           <div className="totalrow grand"><span>Grand total</span><span className="mono">{fmt(grandTotal)}</span></div>
 
