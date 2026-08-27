@@ -73,23 +73,89 @@ export function clearSession() {
 }
 
 // =========================
-// STORAGE
+// BACKEND STORAGE
 // =========================
 
+async function storageRequest(url, options = {}) {
+  const token = getToken();
+
+  const res = await fetch(`${API_BASE}${url}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      ...(options.headers || {}),
+    },
+  });
+
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    throw new Error(data.error || `Storage request failed (${res.status})`);
+  }
+
+  return data;
+}
+
+// window.storage compatible API
 export const apiStorage = {
-  getItem(key) {
-    return localStorage.getItem(key);
+  async getItem(key) {
+    try {
+      const data = await storageRequest(
+        `/storage/${encodeURIComponent(key)}`
+      );
+
+      return data.value;
+    } catch (err) {
+      if (err.message.includes("404")) {
+        return null;
+      }
+
+      throw err;
+    }
   },
 
-  setItem(key, value) {
-    localStorage.setItem(key, value);
+  async setItem(key, value) {
+    const data = await storageRequest(
+      `/storage/${encodeURIComponent(key)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          value: String(value),
+        }),
+      }
+    );
+
+    return data.value;
   },
 
-  removeItem(key) {
-    localStorage.removeItem(key);
+  async removeItem(key) {
+    return storageRequest(
+      `/storage/${encodeURIComponent(key)}`,
+      {
+        method: "DELETE",
+      }
+    );
   },
 
-  clear() {
-    localStorage.clear();
+  async clear() {
+    const data = await storageRequest("/storage");
+
+    for (const key of data.keys || []) {
+      await storageRequest(
+        `/storage/${encodeURIComponent(key)}`,
+        {
+          method: "DELETE",
+        }
+      );
+    }
+  },
+
+  async keys(prefix = "") {
+    const data = await storageRequest(
+      `/storage?prefix=${encodeURIComponent(prefix)}`
+    );
+
+    return data.keys || [];
   },
 };
