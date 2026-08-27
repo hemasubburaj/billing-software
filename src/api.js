@@ -53,4 +53,20 @@ export async function register(username, password, businessName) {
   localStorage.setItem("username", data.username);
 
   return data;
-}
+}export const apiStorage = {
+  getItem(key) {
+    return localStorage.getItem(key);
+  },
+
+  setItem(key, value) {
+    localStorage.setItem(key, value);
+  },
+
+  removeItem(key) {
+    localStorage.removeItem(key);
+  },
+
+  clear() {
+    localStorage.clear();
+  },
+};
