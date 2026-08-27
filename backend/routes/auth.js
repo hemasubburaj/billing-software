@@ -5,62 +5,149 @@ import User from "../models/User.js";
 
 const router = Router();
 
-function signToken(user) {
+function signToken(user, isAdmin = false) {
   return jwt.sign(
-    { userId: user._id.toString() },
+    {
+      userId: user?._id?.toString() || "admin",
+      isAdmin,
+    },
     process.env.JWT_SECRET || "dev-secret-change-me",
-    { expiresIn: "30d" }
+    {
+      expiresIn: "30d",
+    }
   );
 }
 
-// POST /api/auth/register  { username, password, businessName }
+// POST /api/auth/register
+// { username, password, businessName }
+
 router.post("/register", async (req, res) => {
   try {
     const { username, password, businessName } = req.body || {};
+
     if (!username || !password) {
-      return res.status(400).json({ error: "Username and password are required" });
-    }
-    if (password.length < 6) {
-      return res.status(400).json({ error: "Password must be at least 6 characters" });
+      return res.status(400).json({
+        error: "Username and password are required",
+      });
     }
 
-    const existing = await User.findOne({ username: username.trim().toLowerCase() });
-    if (existing) return res.status(409).json({ error: "That username is already taken" });
+    if (password.length < 6) {
+      return res.status(400).json({
+        error: "Password must be at least 6 characters",
+      });
+    }
+
+    const cleanUsername = username.trim().toLowerCase();
+
+    const existing = await User.findOne({
+      username: cleanUsername,
+    });
+
+    if (existing) {
+      return res.status(409).json({
+        error: "That username is already taken",
+      });
+    }
 
     const passwordHash = await bcrypt.hash(password, 10);
+
     const user = await User.create({
-      username: username.trim().toLowerCase(),
+      username: cleanUsername,
       passwordHash,
       businessName: businessName || "",
     });
 
     const token = signToken(user);
-    res.json({ token, username: user.username });
+
+    res.json({
+      token,
+      username: user.username,
+      isAdmin: false,
+    });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Registration failed" });
+    console.error("Registration error:", err);
+
+    res.status(500).json({
+      error: "Registration failed",
+    });
   }
 });
 
-// POST /api/auth/login  { username, password }
+// POST /api/auth/login
+// { username, password }
+
 router.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body || {};
+
     if (!username || !password) {
-      return res.status(400).json({ error: "Username and password are required" });
+      return res.status(400).json({
+        error: "Username and password are required",
+      });
     }
 
-    const user = await User.findOne({ username: username.trim().toLowerCase() });
-    if (!user) return res.status(401).json({ error: "Invalid username or password" });
+    const cleanUsername = username.trim().toLowerCase();
 
-    const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok) return res.status(401).json({ error: "Invalid username or password" });
+    // =========================
+    // ADMIN LOGIN
+    // =========================
+
+    const adminUsername = process.env.ADMIN_USERNAME?.trim().toLowerCase();
+    const adminPassword = process.env.ADMIN_PASSWORD;
+
+    if (
+      adminUsername &&
+      adminPassword &&
+      cleanUsername === adminUsername &&
+      password === adminPassword
+    ) {
+      const token = signToken(null, true);
+
+      return res.json({
+        token,
+        username: cleanUsername,
+        isAdmin: true,
+      });
+    }
+
+    // =========================
+    // NORMAL USER LOGIN
+    // =========================
+
+    const user = await User.findOne({
+      username: cleanUsername,
+    });
+
+    if (!user) {
+      return res.status(401).json({
+        error: "Invalid username or password",
+      });
+    }
+
+    const passwordValid = await bcrypt.compare(
+      password,
+      user.passwordHash
+    );
+
+    if (!passwordValid) {
+      return res.status(401).json({
+        error: "Invalid username or password",
+      });
+    }
 
     const token = signToken(user);
-    res.json({ token, username: user.username });
+
+    res.json({
+      token,
+      username: user.username,
+      isAdmin: false,
+    });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Login failed" });
+    console.error("Login error:", err);
+
+    res.status(500).json({
+      error: "Login failed",
+    });
   }
 });
 
