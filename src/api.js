@@ -1,10 +1,10 @@
-
-import { getToken, getUsername, clearSession, apiStorage } from "./api.js";
-
-
 const API_BASE =
   import.meta.env.VITE_API_URL ||
   "https://billing-software-wlvw.onrender.com/api";
+
+// =========================
+// AUTH
+// =========================
 
 export async function login(username, password) {
   const res = await fetch(`${API_BASE}/auth/login`, {
@@ -53,7 +53,30 @@ export async function register(username, password, businessName) {
   localStorage.setItem("username", data.username);
 
   return data;
-}export const apiStorage = {
+}
+
+// =========================
+// SESSION
+// =========================
+
+export function getToken() {
+  return localStorage.getItem("token");
+}
+
+export function getUsername() {
+  return localStorage.getItem("username") || "";
+}
+
+export function clearSession() {
+  localStorage.removeItem("token");
+  localStorage.removeItem("username");
+}
+
+// =========================
+// STORAGE
+// =========================
+
+export const apiStorage = {
   getItem(key) {
     return localStorage.getItem(key);
   },
