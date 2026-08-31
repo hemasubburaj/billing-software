@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import {
   LayoutDashboard, Receipt, Package, FileText, Plus, Trash2,
   Search, X, Printer, AlertTriangle, ArrowRight, Pencil, Users,
-  Truck, CalendarClock, BarChart3, Settings as SettingsIcon, Download, ShieldAlert, Building2
+  Truck, CalendarClock, BarChart3, Settings as SettingsIcon, Download, ShieldAlert, Building2, Menu
 } from "lucide-react";
 
 const KEYS = {
@@ -21,19 +21,16 @@ const KEYS = {
   users: "spark-billing-users",
 };
 
-// Indian financial year label, e.g. "26-27" for FY starting Apr 2026
 function fyLabel() {
   const d = new Date();
   const y = d.getFullYear();
-  const startYear = d.getMonth() >= 3 ? y : y - 1; // FY starts April
+  const startYear = d.getMonth() >= 3 ? y : y - 1;
   return `${(startYear % 100).toString().padStart(2, "0")}-${((startYear + 1) % 100).toString().padStart(2, "0")}`;
 }
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-const fmt = (n) => "\u20B9" + Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+const fmt = (n) => "₹" + Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
 const todayStr = () => new Date().toISOString().slice(0, 10);
-// Amount = case qty * case content * price (buying full cases)
-// Amount = subunit qty * price (buying loose subunits, e.g. vandal)
 const lineTotal = (item) =>
   item.mode === "case" ? item.qty * (item.caseContent || 1) * item.price : item.qty * item.price;
 const daysUntil = (dateStr) => {
@@ -43,7 +40,6 @@ const daysUntil = (dateStr) => {
 };
 
 const CATEGORY_DEFAULT = "General";
-
 const DEFAULT_UNITS = ["Case", "Unit", "Pit", "Pcs", "Box", "Vandal", "Bundle", "PKT"];
 
 const seedProducts = [
@@ -56,7 +52,7 @@ const seedProducts = [
 ];
 
 const defaultSettings = {
-  businessName: "Sparkline Traders",
+  businessName: "PHOENIX CRACKERS",
   tagline: "Sivakasi's finest fireworks",
   address: "Sivakasi, Tamil Nadu",
   phone: "",
@@ -104,15 +100,18 @@ export default function App() {
   const [settings, setSettings] = useState(defaultSettings);
 
   const [editingName, setEditingName] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [cart, setCart] = useState([]);
   const [customerType, setCustomerType] = useState("wholesale");
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [discountPct, setDiscountPct] = useState(0);
-  const [gstRate, setGstRate] = useState(defaultSettings.gstRate);
+  const [taxType, setTaxType] = useState("intra");
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [selectedUserId, setSelectedUserId] = useState("");
+  const [customGstPct, setCustomGstPct] = useState("");
+  const [pfAmount, setPfAmount] = useState("");
   const [productQuery, setProductQuery] = useState("");
   const [viewInvoice, setViewInvoice] = useState(null);
   const [viewQuotation, setViewQuotation] = useState(null);
@@ -230,15 +229,15 @@ export default function App() {
         return { ...c, price: customerType === "wholesale" ? prod.wholesalePrice : prod.retailPrice };
       })
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customerType]);
 
   const subtotal = cart.reduce((s, c) => s + lineTotal(c), 0);
   const discountAmt = (subtotal * (Number(discountPct) || 0)) / 100;
   const taxable = Math.max(0, subtotal - discountAmt);
-  const effectiveGstRate = Number(gstRate) || 0;
+  const effectiveGstRate = customGstPct !== "" ? (Number(customGstPct) || 0) : (Number(settings.gstRate) || 0);
   const gstAmt = settings.gstEnabled ? (taxable * effectiveGstRate) / 100 : 0;
-  const grandTotal = taxable + gstAmt;
+  const pfAmt = Number(pfAmount) || 0;
+  const grandTotal = taxable + gstAmt + pfAmt;
 
   function nextQuoteNo() {
     const n = (settings.quoteCounter || 0) + 1;
@@ -279,7 +278,10 @@ export default function App() {
       })),
       discountPct: Number(discountPct) || 0,
       subtotal, discountAmt,
-      gstEnabled: settings.gstEnabled, gstRate: effectiveGstRate, gstAmt,
+      gstEnabled: settings.gstEnabled,
+      gstRate: effectiveGstRate,
+      gstAmt,
+      pfAmt,
       total: grandTotal,
       status: "pending",
       invoiceId: null,
@@ -288,7 +290,7 @@ export default function App() {
     await persistQuotations([quotation, ...quotations]);
     await persistSettings({ ...settings, quoteCounter: counter });
 
-    setCart([]); setCustomerName(""); setCustomerPhone(""); setDiscountPct(0); setSelectedAgentId(""); setSelectedUserId("");
+    setCart([]); setCustomerName(""); setCustomerPhone(""); setDiscountPct(0); setSelectedAgentId(""); setSelectedUserId(""); setCustomGstPct(""); setPfAmount("");
     setViewQuotation(quotation);
   }
 
@@ -297,7 +299,6 @@ export default function App() {
     const total = quotation.total;
     const paid = amountPaidVal === "" || amountPaidVal == null ? total : Number(amountPaidVal) || 0;
     const due = Math.max(0, total - paid);
-
     let custId = null;
     let nextCustomers = customers;
     if (quotation.customerPhone) {
@@ -318,7 +319,10 @@ export default function App() {
       agentId: quotation.agentId || null, agentName: quotation.agentName || "",
       createdByUserId: quotation.createdByUserId || null, createdByUserName: quotation.createdByUserName || "",
       items: quotation.items, discountPct: quotation.discountPct, subtotal: quotation.subtotal, discountAmt: quotation.discountAmt,
-      gstEnabled: quotation.gstEnabled, gstRate: quotation.gstRate || 0, gstAmt: quotation.gstAmt || 0,
+      gstEnabled: quotation.gstEnabled,
+      gstRate: quotation.gstRate,
+      gstAmt: quotation.gstAmt,
+      pfAmt: quotation.pfAmt || 0,
       total, paymentMode: payMode, amountPaid: paid, balanceDue: due,
       quoteNo: quotation.quoteNo, returns: [], docType: "Original",
     };
@@ -430,8 +434,14 @@ export default function App() {
   return (
     <div className="app-root">
       <style>{globalStyles}</style>
+      <div className="mobile-topbar">
+        <button className="hamburger" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button>
+        <div className="mobile-brand disp">{settings.businessName}</div>
+      </div>
+      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
 
-      <div className="sidebar">
+      <div className={`sidebar ${sidebarOpen ? "open" : ""}`}>
+        <button className="sidebar-close" onClick={() => setSidebarOpen(false)}><X size={18} /></button>
         <div className="brand-row">
           <div className="brand-mark" />
           <div className="brand-name disp" onClick={() => setEditingName(true)} style={{ cursor: "pointer" }}>
@@ -460,7 +470,7 @@ export default function App() {
           ["reports", "Reports", BarChart3],
           ["settings", "Settings", SettingsIcon],
         ].map(([key, label, Icon]) => (
-          <button key={key} className={`navbtn ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
+          <button key={key} className={`navbtn ${tab === key ? "active" : ""}`} onClick={() => { setTab(key); setSidebarOpen(false); }}>
             <Icon size={16} /> {label}
           </button>
         ))}
@@ -489,9 +499,12 @@ export default function App() {
           <BillTab {...{
             products: filteredProducts, productQuery, setProductQuery, cart, addToCart, updateCartQty, updateCartMode, updateCartPrice, removeFromCart,
             customerType, setCustomerType, customerName, setCustomerName, customerPhone, setCustomerPhone, customers,
-            discountPct, setDiscountPct, gstRate, setGstRate, subtotal, discountAmt, taxable, gstAmt,
+            discountPct, setDiscountPct, subtotal, discountAmt, taxable, gstAmt, taxType, setTaxType,
             grandTotal, saveQuotation, settings, agents, selectedAgentId, setSelectedAgentId, addProduct, units,
             users, selectedUserId, setSelectedUserId,
+            gstRate: effectiveGstRate,
+            customGstPct, setCustomGstPct,
+            pfAmount, setPfAmount,
           }} />
         )}
         {tab === "quotations" && (
@@ -684,9 +697,12 @@ function BillTab(props) {
   const {
     products, productQuery, setProductQuery, cart, addToCart, updateCartQty, updateCartMode, updateCartPrice, removeFromCart,
     customerType, setCustomerType, customerName, setCustomerName, customerPhone, setCustomerPhone, customers,
-    discountPct, setDiscountPct, gstRate, setGstRate, subtotal, discountAmt, gstAmt,
+    discountPct, setDiscountPct, subtotal, discountAmt, taxable, gstAmt, taxType, setTaxType,
     grandTotal, saveQuotation, settings, agents, selectedAgentId, setSelectedAgentId, addProduct, units,
     users, selectedUserId, setSelectedUserId,
+    gstRate,
+    customGstPct, setCustomGstPct,
+    pfAmount, setPfAmount,
   } = props;
 
   const [showNewProduct, setShowNewProduct] = useState(false);
@@ -742,6 +758,13 @@ function BillTab(props) {
               <select value={selectedUserId} onChange={(e) => setSelectedUserId(e.target.value)}>
                 <option value="">Not recorded</option>
                 {(users || []).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>GST type</label>
+              <select value={taxType} onChange={(e) => setTaxType(e.target.value)}>
+                <option value="intra">Intrastate</option>
+                <option value="inter">Interstate</option>
               </select>
             </div>
           </div>
@@ -805,7 +828,7 @@ function BillTab(props) {
           <h3>Quotation summary</h3>
           {cart.length === 0 ? <div className="emptystate">Add products from the left to start a quotation.</div> : (
             <table>
-              <thead><tr><th>Item</th><th style={{ width: 110 }}>Mode</th><th style={{ width: 70 }}>Qty</th><th style={{ width: 74 }}>Rate</th><th style={{ width: 26 }}></th></tr></thead>
+              <thead><tr><th>Item</th><th style={{ width: 110 }}>Mode</th><th style={{ width: 90 }}>Case content qty</th><th style={{ width: 74 }}>Rate</th><th style={{ width: 26 }}></th></tr></thead>
               <tbody>
                 {cart.map((c) => (
                   <tr key={c.productId}>
@@ -838,14 +861,35 @@ function BillTab(props) {
           <div className="totalrow"><span>Subtotal</span><span className="mono">{fmt(subtotal)}</span></div>
           <div className="totalrow"><span>Discount</span><span className="mono">-{fmt(discountAmt)}</span></div>
           {settings.gstEnabled && (
-            <>
-              <div className="field" style={{ marginBottom: 10 }}>
-                <label>GST (%)</label>
-                <input type="number" min="0" max="100" step="0.01" value={gstRate} onChange={(e) => setGstRate(e.target.value)} />
-              </div>
-              <div className="totalrow"><span>GST ({effectiveGstRate}%)</span><span className="mono">{fmt(gstAmt)}</span></div>
-            </>
+            <div className="totalrow">
+              <span>
+                GST %{" "}
+                <input
+                  type="number"
+                  min="0"
+                  placeholder={gstRate}
+                  value={customGstPct}
+                  onChange={(e) => setCustomGstPct(e.target.value)}
+                  style={{ width: 50, padding: "2px 5px", fontSize: 11.5, textAlign: "right", marginLeft: 4 }}
+                />
+              </span>
+              <span className="mono">{fmt(gstAmt)}</span>
+            </div>
           )}
+          <div className="totalrow">
+            <span>
+              P&F (₹){" "}
+              <input
+                type="number"
+                min="0"
+                placeholder="0"
+                value={pfAmount}
+                onChange={(e) => setPfAmount(e.target.value)}
+                style={{ width: 60, padding: "2px 5px", fontSize: 11.5, textAlign: "right", marginLeft: 4 }}
+              />
+            </span>
+            <span className="mono">{fmt(Number(pfAmount) || 0)}</span>
+          </div>
           <div className="totalrow grand"><span>Grand total</span><span className="mono">{fmt(grandTotal)}</span></div>
 
           <div style={{ marginTop: 14 }}>
@@ -1616,8 +1660,8 @@ function ReportsTab({ invoices, products, agents, users }) {
     const rows = invoices.map((inv) => ({
       "Inv No & Date": `${inv.invoiceNo} ${inv.date}`, Party: inv.customerName,
       TaxableValue: inv.subtotal - inv.discountAmt,
-      GSTRate: inv.gstRate || 0, GST: inv.gstAmt || 0,
-      TaxAmount: inv.gstAmt || 0, TotalAmount: inv.total,
+      GST: inv.gstAmt || 0,
+      TotalAmount: inv.total,
     }));
     downloadXlsx(rows, "sales_tax_report.xlsx", "Sales Tax");
   }
@@ -1739,13 +1783,12 @@ function ReportsTab({ invoices, products, agents, users }) {
             </table>
           )}
         </div>
-
         <div className="panel" style={{ marginBottom: 0 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <h3>Staff performance</h3>
             <button className="ghostbtn" onClick={exportStaffPerformance} disabled={staffPerformance.length === 0}><Download size={14} /> Export</button>
           </div>
-          {staffPerformance.length === 0 ? <div className="emptystate">No staff-attributed sales yet.</div> : (
+          {staffPerformance.length === 0 ? <div className="emptystate">No staff-linked sales yet.</div> : (
             <table>
               <thead><tr><th>Staff</th><th>Bills</th><th style={{ textAlign: "right" }}>Sales</th></tr></thead>
               <tbody>
@@ -1764,353 +1807,287 @@ function ReportsTab({ invoices, products, agents, users }) {
 
       <div className="panel">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3>Sales Tax Report</h3>
-          <button className="ghostbtn" onClick={exportSalesTax} disabled={invoices.length === 0}><Download size={14} /> Download Sales tax</button>
+          <h3>Stock value by category</h3>
         </div>
-        {invoices.length === 0 ? <div className="emptystate">No estimates yet.</div> : (
+        {stockValueByCategory.length === 0 ? <div className="emptystate">No products yet.</div> : (
           <table>
-            <thead><tr><th>Inv.No & Date</th><th>Party</th><th>Taxable value</th><th>GST %</th><th>GST</th><th>Tax amount</th><th style={{ textAlign: "right" }}>Total</th></tr></thead>
+            <thead><tr><th>Category</th><th style={{ textAlign: "right" }}>Stock value</th></tr></thead>
             <tbody>
-              {invoices.map((inv) => {
-                const taxAmt = inv.gstAmt || 0;
-                return (
-                  <tr key={inv.id}>
-                    <td style={{ fontSize: 12 }}>{inv.invoiceNo}<br />{inv.date}</td>
-                    <td>{inv.customerName}</td>
-                    <td className="mono">{fmt(inv.subtotal - inv.discountAmt)}</td>
-                    <td className="mono">{inv.gstRate || 0}%</td>
-                    <td className="mono">{fmt(inv.gstAmt || 0)}</td>
-                    <td className="mono">{fmt(taxAmt)}</td>
-                    <td style={{ textAlign: "right" }} className="mono">{fmt(inv.total)}</td>
-                  </tr>
-                );
-              })}
+              {stockValueByCategory.map((s) => (
+                <tr key={s.category}>
+                  <td>{s.category}</td>
+                  <td style={{ textAlign: "right" }} className="mono">{fmt(s.value)}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         )}
       </div>
 
       <div className="panel">
-        <h3>Stock value by category</h3>
-        <table>
-          <thead><tr><th>Category</th><th style={{ textAlign: "right" }}>Stock value</th></tr></thead>
-          <tbody>
-            {stockValueByCategory.map((c) => (
-              <tr key={c.category}><td>{c.category}</td><td style={{ textAlign: "right" }} className="mono">{fmt(c.value)}</td></tr>
-            ))}
-          </tbody>
-        </table>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h3>Sales tax report</h3>
+          <button className="ghostbtn" onClick={exportSalesTax} disabled={invoices.length === 0}><Download size={14} /> Export Excel</button>
+        </div>
+        {invoices.length === 0 ? <div className="emptystate">No sales yet.</div> : (
+          <div style={{ fontSize: 12, color: "var(--ink-soft)", marginTop: 8 }}>
+            Use the Export Excel button to download a full sales tax report with taxable value and GST.
+          </div>
+        )}
       </div>
     </>
   );
 }
 
 function SettingsTab({ settings, setSettings, persistSettings, resetCounter }) {
-  const [local, setLocal] = useState(settings);
-  useEffect(() => setLocal(settings), [settings]);
-
-  function save() { setSettings(local); persistSettings(local); }
-
   return (
     <>
       <div className="topbar"><div className="pagetitle disp">Settings</div></div>
-
       <div className="panel">
-        <h3>Bill numbering</h3>
-        <div className="split-two-14">
-          <div>
-            <div style={{ fontSize: 12.5, marginBottom: 6 }}>Next quotation number: <span className="mono" style={{ fontWeight: 700 }}>{((settings.quoteCounter || 0) + 1).toString().padStart(3, "0")}/QUT{fyLabel()}</span></div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="ghostbtn" disabled>Continue from last</button>
-              <button className="ghostbtn" onClick={() => resetCounter("quote")}>Reset to 1</button>
-            </div>
-          </div>
-          <div>
-            <div style={{ fontSize: 12.5, marginBottom: 6 }}>Next estimate number: <span className="mono" style={{ fontWeight: 700 }}>{((settings.invoiceCounter || 0) + 1).toString().padStart(3, "0")}/INV{fyLabel()}</span></div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="ghostbtn" disabled>Continue from last</button>
-              <button className="ghostbtn" onClick={() => resetCounter("invoice")}>Reset to 1</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="panel">
-        <h3>Business (appears on printed bills)</h3>
+        <h3>Business details</h3>
         <div className="formgrid">
-          <div className="field"><label>Business name</label><input value={local.businessName} onChange={(e) => setLocal({ ...local, businessName: e.target.value })} /></div>
-          <div className="field"><label>Tagline</label><input value={local.tagline} onChange={(e) => setLocal({ ...local, tagline: e.target.value })} placeholder="Sivakasi's finest fireworks" /></div>
-          <div className="field"><label>Address</label><input value={local.address} onChange={(e) => setLocal({ ...local, address: e.target.value })} /></div>
-          <div className="field"><label>Phone</label><input value={local.phone} onChange={(e) => setLocal({ ...local, phone: e.target.value })} /></div>
-          <div className="field"><label>Email</label><input value={local.email} onChange={(e) => setLocal({ ...local, email: e.target.value })} /></div>
-          <div className="field"><label>Website</label><input value={local.website} onChange={(e) => setLocal({ ...local, website: e.target.value })} /></div>
+          <div className="field"><label>Business name</label><input value={settings.businessName} onChange={(e) => setSettings({ ...settings, businessName: e.target.value })} /></div>
+          <div className="field"><label>Tagline</label><input value={settings.tagline} onChange={(e) => setSettings({ ...settings, tagline: e.target.value })} /></div>
+          <div className="field"><label>Address</label><input value={settings.address} onChange={(e) => setSettings({ ...settings, address: e.target.value })} /></div>
+          <div className="field"><label>Phone</label><input value={settings.phone} onChange={(e) => setSettings({ ...settings, phone: e.target.value })} /></div>
+          <div className="field"><label>Email</label><input value={settings.email} onChange={(e) => setSettings({ ...settings, email: e.target.value })} /></div>
+          <div className="field"><label>Website</label><input value={settings.website} onChange={(e) => setSettings({ ...settings, website: e.target.value })} /></div>
         </div>
+        <button className="primarybtn" style={{ width: "auto", padding: "9px 18px", marginTop: 8 }} onClick={() => persistSettings(settings)}>Save business details</button>
       </div>
 
       <div className="panel">
-        <h3>GST</h3>
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 12 }}>
-          <input type="checkbox" style={{ width: "auto" }} checked={local.gstEnabled} onChange={(e) => setLocal({ ...local, gstEnabled: e.target.checked })} />
-          Enable GST on bills
-        </label>
-        {local.gstEnabled && (
-          <>
-            <div className="field" style={{ maxWidth: 200 }}>
-              <label>GST rate %</label>
-              <input type="number" value={local.gstRate} onChange={(e) => setLocal({ ...local, gstRate: e.target.value })} />
-            </div>
-            <div style={{ fontSize: 11.5, color: "var(--ink-soft)", marginTop: 6 }}>
-              This rate is used as the default GST rate. You can change the GST percentage directly in each New quotation.
-            </div>
-          </>
+        <h3>GST settings</h3>
+        <div className="formgrid">
+          <div className="field"><label>GST enabled</label>
+            <select value={settings.gstEnabled ? "yes" : "no"} onChange={(e) => setSettings({ ...settings, gstEnabled: e.target.value === "yes" })}>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+          </div>
+          <div className="field"><label>GST rate (%)</label><input type="number" value={settings.gstRate} onChange={(e) => setSettings({ ...settings, gstRate: e.target.value })} /></div>
+        </div>
+        <button className="primarybtn" style={{ width: "auto", padding: "9px 18px", marginTop: 8 }} onClick={() => persistSettings(settings)}>Save GST settings</button>
+      </div>
+
+      <div className="panel">
+        <h3>License</h3>
+        <div className="formgrid">
+          <div className="field"><label>License number</label><input value={settings.licenseNumber} onChange={(e) => setSettings({ ...settings, licenseNumber: e.target.value })} /></div>
+          <div className="field"><label>License expiry</label><input type="date" value={settings.licenseExpiry} onChange={(e) => setSettings({ ...settings, licenseExpiry: e.target.value })} /></div>
+        </div>
+        <button className="primarybtn" style={{ width: "auto", padding: "9px 18px", marginTop: 8 }} onClick={() => persistSettings(settings)}>Save license</button>
+        {daysUntil(settings.licenseExpiry) !== null && (
+          <div style={{ fontSize: 12, color: "var(--ink-soft)", marginTop: 8 }}>
+            License expires in {daysUntil(settings.licenseExpiry)} days.
+          </div>
         )}
       </div>
 
       <div className="panel">
-        <h3>Fireworks license</h3>
-        <div className="formgrid">
-          <div className="field"><label>License number</label><input value={local.licenseNumber} onChange={(e) => setLocal({ ...local, licenseNumber: e.target.value })} /></div>
-          <div className="field"><label>Expiry date</label><input type="date" value={local.licenseExpiry} onChange={(e) => setLocal({ ...local, licenseExpiry: e.target.value })} /></div>
+        <h3>Reset counters</h3>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="ghostbtn" onClick={() => resetCounter("quote")}>Reset quotation counter</button>
+          <button className="ghostbtn" onClick={() => resetCounter("invoice")}>Reset invoice counter</button>
         </div>
-        <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>A reminder banner shows on the dashboard once expiry is within 30 days.</div>
+        <div style={{ fontSize: 12, color: "var(--ink-soft)", marginTop: 8 }}>
+          Current FY: {fyLabel()}. Counters reset will start from 001 again.
+        </div>
       </div>
-
-      <button className="primarybtn" style={{ width: "auto", padding: "10px 22px" }} onClick={save}>Save settings</button>
     </>
   );
 }
 
 function ReceiptCard({ doc, kind, settings, onClose }) {
-  const contactLine = [settings.website, settings.phone, settings.email].filter(Boolean).join("  |  ");
   const isEstimate = kind === "estimate";
-  const paymentStatus = isEstimate ? (doc.balanceDue > 0 ? (doc.amountPaid > 0 ? "PARTIAL" : "PENDING") : "PAID") : null;
-  const docNo = isEstimate ? doc.invoiceNo : doc.quoteNo;
-  const docLabel = isEstimate ? "Invoice No" : "Quote No";
-  const titleText = isEstimate ? "ESTIMATE BILL" : "QUOTATION";
-
   return (
-    <div className="estimate" onClick={(e) => e.stopPropagation()}>
-      <button className="iconbtn est-close" onClick={onClose}><X size={16} /></button>
-
-      <div className="est-header">
-        <div className="disp est-bizname">{settings.businessName}</div>
-        {settings.tagline && <div className="est-tagline">{settings.tagline.toUpperCase()}</div>}
-        {contactLine && <div className="est-contact">{contactLine}</div>}
-      </div>
-      <div className="est-rule" />
-
-      <div className="est-title">{titleText}</div>
-      {!isEstimate && doc.status === "converted" && (
-        <div style={{ textAlign: "center", marginBottom: 10 }}><span className="badge ok">Converted to estimate</span></div>
-      )}
-
-      <div className="est-parties">
+    <div style={{ background: "#fff", borderRadius: 10, padding: 20, maxWidth: 420, margin: "40px auto", boxShadow: "0 10px 30px rgba(0,0,0,0.15)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div>
-          <div className="est-label">FROM</div>
-          <div className="est-name">{settings.businessName}</div>
-          <div className="est-line">{settings.address}</div>
-          {settings.phone && <div className="est-line">{settings.phone}</div>}
-          {settings.email && <div className="est-line">{settings.email}</div>}
-          {settings.website && <div className="est-line">{settings.website}</div>}
+          <div style={{ fontWeight: 700, fontSize: 16 }}>{settings.businessName}</div>
+          <div style={{ fontSize: 11.5, color: "#756B5D" }}>{settings.tagline}</div>
         </div>
-        <div>
-          <div className="est-label">{isEstimate ? "BILL TO" : "QUOTE FOR"}</div>
-          <div className="est-name">{doc.customerName}</div>
-          {doc.customerPhone && <div className="est-line">Mobile: {doc.customerPhone}</div>}
-          <span className={`badge ${doc.customerType}`} style={{ marginTop: 4 }}>{doc.customerType}</span>
-        </div>
+        <button className="iconbtn" onClick={onClose}><X size={16} /></button>
       </div>
-
-      <div className="est-orderbar">
-        <span>{docLabel}: <strong>{docNo}</strong></span>
-        {doc.agentName && <span>Agent: <strong>{doc.agentName}</strong></span>}
-        <span>Date: <strong>{doc.date}</strong></span>
+      <div style={{ fontSize: 12, marginBottom: 10 }}>
+        <div style={{ fontWeight: 600 }}>{isEstimate ? "Estimate" : "Quotation"} {isEstimate ? doc.invoiceNo : doc.quoteNo}</div>
+        <div>Date: {doc.date}</div>
+        <div>Customer: {doc.customerName} {doc.customerPhone ? `• ${doc.customerPhone}` : ""}</div>
+        {doc.agentName && <div>Agent: {doc.agentName}</div>}
+        {doc.createdByUserName && <div>Created by: {doc.createdByUserName}</div>}
       </div>
-
-      <table className="est-table">
-        <thead><tr><th>SL.N</th><th>Product name</th><th>Qty</th><th>Rate (Rs.)</th><th>Per</th><th style={{ textAlign: "right" }}>Total</th></tr></thead>
+      <table style={{ width: "100%", fontSize: 11.5, marginBottom: 10 }}>
+        <thead>
+          <tr><th style={{ textAlign: "left" }}>Item</th><th style={{ textAlign: "right" }}>Qty</th><th style={{ textAlign: "right" }}>Rate</th><th style={{ textAlign: "right" }}>Amount</th></tr>
+        </thead>
         <tbody>
           {doc.items.map((it, idx) => (
             <tr key={idx}>
-              <td>{idx + 1}</td>
-              <td>{it.name}</td>
-              <td>{it.qty} {it.mode === "case" ? "Case" : it.subunit}</td>
-              <td>{fmt(it.price)}</td>
-              <td>{it.subunit}</td>
+              <td>{it.name}<div style={{ fontSize: 10, color: "#756B5D" }}>{it.mode === "case" ? `Case × ${it.qty} (${it.caseContent} subunits/case)` : `${it.subunit} × ${it.qty}`}</div></td>
+              <td style={{ textAlign: "right" }}>{it.qty}</td>
+              <td style={{ textAlign: "right" }}>{fmt(it.price)}</td>
               <td style={{ textAlign: "right" }}>{fmt(it.total)}</td>
             </tr>
           ))}
         </tbody>
       </table>
-
-      <div className="est-terms">
-        <div className="est-label" style={{ marginBottom: 6 }}>TERMS & CONDITIONS</div>
-        <ol>
-          <li>Product images are for reference only; actual items may vary.</li>
-          <li>Delivery charges are payable by customer to the transport provider.</li>
-          <li>Prices are valid at the time of quotation and subject to change.</li>
-        </ol>
-      </div>
-
-      <div className="est-totals">
-        <div className="est-totrow"><span>Subtotal</span><span>{fmt(doc.subtotal)}</span></div>
-        <div className="est-totrow"><span>Discount ({doc.discountPct}%)</span><span>-{fmt(doc.discountAmt)}</span></div>
-        {doc.gstEnabled && (
-          <div className="est-totrow"><span>GST ({doc.gstRate || 0}%)</span><span>{fmt(doc.gstAmt || 0)}</span></div>
-        )}
-        <div className="est-totrow grand"><span>Grand total</span><span>{fmt(doc.total)}</span></div>
-      </div>
-
-      <div className="est-rule" style={{ margin: "16px 0 10px" }} />
-      <div className="est-footer">
-        {isEstimate ? (
+      <div style={{ borderTop: "1px solid #E5DDCB", paddingTop: 8, fontSize: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between" }}><span>Subtotal</span><span>{fmt(doc.subtotal)}</span></div>
+        {doc.discountAmt > 0 && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Discount</span><span>-{fmt(doc.discountAmt)}</span></div>}
+        {doc.gstEnabled && <div style={{ display: "flex", justifyContent: "space-between" }}><span>GST ({doc.gstRate}%)</span><span>{fmt(doc.gstAmt || 0)}</span></div>}
+        <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, marginTop: 6 }}><span>Total</span><span>{fmt(doc.total)}</span></div>
+        {isEstimate && (
           <>
-            Thank you for your business with {settings.businessName}<br />
-            Payment: {doc.paymentMode} ({paymentStatus}){doc.balanceDue > 0 && ` — Balance due ${fmt(doc.balanceDue)}`}
+            <div style={{ fontSize: 11, color: "#756B5D", marginTop: 6 }}>Payment: {doc.paymentMode} • Paid: {fmt(doc.amountPaid)} • Due: {fmt(doc.balanceDue)}</div>
           </>
-        ) : (
-          <>This is a quotation, not a final bill. Convert it to an estimate once confirmed.</>
         )}
       </div>
-
-      <button className="ghostbtn" style={{ width: "100%", justifyContent: "center", marginTop: 16 }} onClick={() => window.print()}>
-        <Printer size={14} /> Print
-      </button>
+      <div style={{ fontSize: 10.5, color: "#756B5D", marginTop: 12, textAlign: "center" }}>
+        {settings.address} {settings.phone ? `• ${settings.phone}` : ""} {settings.email ? `• ${settings.email}` : ""}
+      </div>
     </div>
   );
 }
 
 const globalStyles = `
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap');
-* { box-sizing: border-box; }
-.app-root {
-  --bg: #F7F3EC; --panel: #FFFFFF; --ink: #211C15; --ink-soft: #756B5D;
-  --accent: #D6431F; --accent-soft: #F5DCC9; --gold: #B07C1F; --gold-soft: #F1E3C4;
-  --green: #3F6B4C; --green-soft: #E1EBDF; --line: #E5DDCB; --sidebar: #211C15; --sidebar-soft: #B8AC98;
-  font-family: 'Inter', sans-serif; background: var(--bg); color: var(--ink);
-  display: flex; min-height: 100vh; width: 100%; box-sizing: border-box;
+:root {
+  --bg: #F3EFE6; --card: #FFFFFF; --ink: #221F1A; --ink-soft: #7A7062; --line: #E7E0D0;
+  --brand: #D6431F; --brand-dark: #B7371A; --brand-soft: #FBE4DA; --ok: #2E7D32; --ok-soft: #E8F5E9;
+  --low: #A32D2D; --low-soft: #FDECEA; --radius: 12px; --shadow-sm: 0 1px 2px rgba(30,25,15,0.06);
+  --shadow-md: 0 4px 16px rgba(30,25,15,0.08); --sidebar-w: 232px;
+  --side-bg: #1C1A16; --side-bg-2: #262319; --side-text: #C9C2B4; --side-text-active: #FFFFFF;
 }
-.disp { font-family: 'Space Grotesk', sans-serif; }
-.mono { font-family: 'JetBrains Mono', monospace; }
-.sidebar { width: 208px; background: var(--sidebar); color: var(--sidebar-soft); padding: 20px 14px; display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
-.brand-row { display:flex; align-items:center; gap:8px; padding: 4px 10px 22px; }
-.brand-mark { width:10px; height:10px; border-radius:50%; background: var(--accent); box-shadow: 0 0 0 3px rgba(214,67,31,0.25); }
-.brand-name { color:#F7F3EC; font-size:15px; font-weight:700; letter-spacing:0.2px; }
-.navbtn { display:flex; align-items:center; gap:10px; padding: 9px 12px; border-radius:8px; cursor:pointer; font-size: 12.8px; font-weight: 500; color: var(--sidebar-soft); background: transparent; border: none; text-align:left; width:100%; }
-.navbtn:hover { background: rgba(247,243,236,0.08); color:#F7F3EC; }
-.navbtn.active { background: var(--accent); color: #FCEFE8; }
-.main { flex: 1; padding: 24px 28px; overflow-y: auto; }
-.topbar { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:22px; }
-.pagetitle { font-size:20px; font-weight:700; }
-.datepill { font-size:12px; color: var(--ink-soft); background: var(--panel); border:0.5px solid var(--line); padding:5px 10px; border-radius:20px; }
-.licensebanner { display:flex; align-items:center; gap:8px; background: var(--gold-soft); color:#7A5716; border-radius:8px; padding:9px 14px; font-size:12.5px; font-weight:600; margin-bottom:16px; }
-.licensebanner.expired { background:#F7DEDA; color:#A32D2D; }
-.cardrow { display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; margin-bottom: 20px; }
-.metric { background: var(--panel); border:0.5px solid var(--line); border-radius:10px; padding:14px 16px; }
-.metric .label { font-size:11.5px; color: var(--ink-soft); text-transform:uppercase; letter-spacing:0.4px; margin-bottom:6px; }
-.metric .value { font-size:21px; font-weight:700; }
-.panel { background: var(--panel); border:0.5px solid var(--line); border-radius:10px; padding:16px 18px; margin-bottom:16px; }
-.panel h3 { font-size:13.5px; font-weight:600; margin:0 0 12px; color: var(--ink); }
-table { width:100%; border-collapse:collapse; font-size:13px; }
-th { text-align:left; color: var(--ink-soft); font-weight:500; font-size:11.5px; text-transform:uppercase; letter-spacing:0.3px; padding:6px 8px; border-bottom:0.5px solid var(--line); }
-td { padding:9px 8px; border-bottom:0.5px solid var(--line); }
-tr:last-child td { border-bottom:none; }
-.badge { display:inline-block; padding:2px 9px; border-radius:20px; font-size:11px; font-weight:600; }
-.badge.wholesale { background: var(--gold-soft); color: #7A5716; }
-.badge.retail { background: var(--accent-soft); color: #9C371A; }
-.badge.low { background: #F7DEDA; color: #A32D2D; }
-.badge.ok { background: var(--green-soft); color: #2C5138; }
-.segrow { display:flex; gap:8px; margin-bottom:16px; }
-.segbtn { flex:1; padding:11px; border-radius:8px; border: 0.5px solid var(--line); background: var(--panel); font-weight:600; font-size:13.5px; cursor:pointer; color: var(--ink-soft); }
-.segbtn.active.wholesale { background: var(--gold); color:#FBF3E4; border-color: var(--gold); }
-.segbtn.active.retail { background: var(--accent); color:#FDECE4; border-color: var(--accent); }
-.field { margin-bottom:12px; }
-.field label { display:block; font-size:12px; color: var(--ink-soft); margin-bottom:4px; font-weight:500; }
-input, select { width:100%; padding:8px 10px; border-radius:7px; border:0.5px solid var(--line); background:#FBF9F4; font-size:13.5px; font-family:'Inter',sans-serif; color: var(--ink); }
-input:focus, select:focus { outline:none; border-color: var(--accent); }
-input[type=checkbox] { width:auto; }
-.searchwrap { position:relative; margin-bottom:10px; }
-.searchwrap svg { position:absolute; left:10px; top:10px; color: var(--ink-soft); }
-.searchwrap input { padding-left:32px; }
-.prodlist { max-height:220px; overflow-y:auto; border:0.5px solid var(--line); border-radius:8px; }
-.prodrow { display:flex; justify-content:space-between; align-items:center; padding:9px 12px; border-bottom:0.5px solid var(--line); font-size:13px; cursor:pointer; }
-.prodrow:last-child { border-bottom:none; }
-.prodrow:hover { background: #FBF6EC; }
-.prodrow .pname { font-weight:500; }
-.prodrow .pmeta { font-size:11.5px; color: var(--ink-soft); }
-.iconbtn { background:none; border:none; cursor:pointer; color: var(--ink-soft); padding:4px; border-radius:6px; display:flex; }
-.iconbtn:hover { background: var(--line); color: var(--ink); }
-.fuse { display:flex; align-items:center; gap:6px; margin: 14px 0; color: var(--line); }
-.fuse .dash { flex:1; border-top: 1.5px dashed var(--line); }
-.fuse .dot { width:5px; height:5px; border-radius:50%; background: var(--accent); }
-.totalrow { display:flex; justify-content:space-between; font-size:13.5px; padding:4px 0; color: var(--ink-soft); }
-.totalrow.grand { font-size:19px; font-weight:700; color: var(--ink); padding-top:8px; border-top: 0.5px solid var(--line); margin-top:6px; }
-.primarybtn { background: var(--accent); color:#FDECE4; border:none; padding:12px; border-radius:8px; font-weight:700; font-size:14px; cursor:pointer; width:100%; display:flex; align-items:center; justify-content:center; gap:6px; }
-.primarybtn:disabled { opacity:0.4; cursor:not-allowed; }
-.ghostbtn { background:transparent; border:0.5px solid var(--line); padding:9px 14px; border-radius:7px; font-size:13px; font-weight:600; cursor:pointer; color: var(--ink); display:flex; align-items:center; gap:6px; }
-.ghostbtn:hover { background: #F2ECDD; }
-.ghostbtn:disabled { opacity:0.4; cursor:not-allowed; }
-.modal-backdrop { position: relative; min-height: 100%; background: rgba(33,28,21,0.55); display:flex; align-items:center; justify-content:center; padding: 24px; border-radius: 12px; }
-.estimate { background:#FFFFFF; width: 640px; max-width: 100%; max-height: 90vh; overflow-y:auto; border-radius:6px; padding: 32px 36px; position:relative; font-family:'Inter', sans-serif; color: var(--ink); }
-.est-close { position:absolute; top:14px; right:14px; }
-.est-header { text-align:center; margin-bottom:10px; }
-.est-bizname { font-size:26px; font-weight:700; color: var(--accent); letter-spacing:0.5px; }
-.est-tagline { font-size:11px; letter-spacing:1.5px; color: var(--ink-soft); margin-top:2px; }
-.est-contact { font-size:11.5px; color: var(--green); margin-top:8px; }
-.est-rule { border-top: 2.5px solid var(--accent); }
-.est-title { text-align:center; font-size:15px; font-weight:700; letter-spacing:1px; margin: 18px 0; }
-.est-parties { display:grid; grid-template-columns: 1fr 1fr; gap:20px; margin-bottom:18px; }
-.est-label { font-size:11px; color: var(--ink-soft); letter-spacing:0.5px; margin-bottom:4px; }
-.est-name { font-weight:700; font-size:13.5px; margin-bottom:2px; }
-.est-line { font-size:12.5px; color: var(--ink); line-height:1.5; }
-.est-orderbar { display:flex; justify-content:space-between; background: var(--gold-soft); padding:9px 14px; border-radius:4px; font-size:12.5px; margin-bottom:14px; }
-.est-table { width:100%; border-collapse:collapse; font-size:12.5px; margin-bottom:16px; }
-.est-table th { background: var(--sidebar); color:#F1E9D8; text-align:left; padding:8px 10px; font-size:11px; letter-spacing:0.3px; }
-.est-table td { padding:8px 10px; border-bottom:0.5px solid var(--line); }
-.est-terms { font-size:11px; color: var(--ink-soft); margin-bottom:18px; }
-.est-terms ol { margin:0; padding-left:16px; line-height:1.7; }
-.est-totals { margin-left:auto; width:260px; }
-.est-totrow { display:flex; justify-content:space-between; font-size:12.5px; padding:4px 0; color: var(--ink-soft); }
-.est-totrow.grand { font-size:17px; font-weight:700; color: var(--accent); border-top: 1px solid var(--line); padding-top:8px; margin-top:4px; }
-.est-footer { text-align:center; font-size:11.5px; color: var(--ink-soft); line-height:1.7; }
-@media print { .est-close, .ghostbtn { display:none; } }
-.formgrid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
-.emptystate { text-align:center; padding: 30px 10px; color: var(--ink-soft); font-size:13px; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+.app-root { display: flex; min-height: 100vh; }
 
-/* Layout helper classes (replace fragile inline grid-template-columns) */
+/* Sidebar - dark theme */
+.sidebar { width: var(--sidebar-w); flex-shrink: 0; background: linear-gradient(180deg, var(--side-bg), var(--side-bg-2)); border-right: 1px solid rgba(255,255,255,0.06); padding: 20px 12px; position: sticky; top: 0; height: 100vh; overflow-y: auto; z-index: 50; }
+.sidebar-close { display: none; }
+.brand-row { display: flex; align-items: center; gap: 10px; margin-bottom: 24px; padding: 0 8px; }
+.brand-mark { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, var(--brand), #F59A23); box-shadow: 0 2px 8px rgba(214,67,31,0.4); flex-shrink: 0; }
+.brand-name { font-weight: 800; font-size: 15px; letter-spacing: -0.2px; color: #FFF; }
+.navbtn { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 12px; border: 0; border-radius: 9px; background: transparent; color: var(--side-text); font-size: 13.5px; font-weight: 500; cursor: pointer; margin-bottom: 3px; transition: background 0.15s ease, color 0.15s ease; text-align: left; }
+.navbtn:hover { background: rgba(255,255,255,0.06); color: #FFF; }
+.navbtn.active { background: var(--brand); color: #FFF; font-weight: 700; box-shadow: 0 2px 8px rgba(214,67,31,0.35); }
+
+/* Mobile top bar - hidden on desktop */
+.mobile-topbar { display: none; }
+.sidebar-overlay { display: none; }
+
+/* Main */
+.main { flex: 1; padding: 22px 26px 50px; max-width: 100%; overflow-x: hidden; min-width: 0; }
+.topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 10px; }
+.pagetitle { font-weight: 800; font-size: 20px; letter-spacing: -0.3px; }
+.datepill { background: #FFF; border: 1px solid var(--line); padding: 7px 12px; border-radius: 999px; font-size: 12px; color: var(--ink-soft); box-shadow: var(--shadow-sm); }
+.licensebanner { display: flex; align-items: center; gap: 8px; background: #FFF5EB; border: 1px solid var(--brand-soft); color: var(--brand-dark); padding: 10px 12px; border-radius: 10px; font-size: 12.5px; margin-bottom: 14px; }
+.licensebanner.expired { background: var(--low-soft); border-color: #F5B7B1; color: #A32D2D; }
+
+/* Cards */
+.cardrow { display: grid; gap: 14px; margin-bottom: 16px; }
 .cardrow-5 { grid-template-columns: repeat(5, 1fr); }
 .cardrow-3 { grid-template-columns: repeat(3, 1fr); }
-.split-main { display:grid; grid-template-columns: 1.3fr 1fr; gap:18px; }
-.split-two { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
-.split-two-14 { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
+.metric { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow-sm); transition: box-shadow 0.15s ease, transform 0.15s ease; }
+.metric:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.metric .label { font-size: 11.5px; color: var(--ink-soft); font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
+.metric .value { font-size: 19px; font-weight: 800; margin-top: 8px; letter-spacing: -0.3px; }
 
-/* ===== Responsive: tablet & mobile ===== */
-@media (max-width: 900px) {
-  .app-root { flex-direction: column; min-height: auto; }
-  .sidebar {
-    width: 100%; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center;
-    padding: 12px; gap: 6px; position: sticky; top: 0; z-index: 10;
-  }
-  .brand-row { width: 100%; padding: 0 4px 10px; }
-  .navbtn { width: auto; flex: 1 1 auto; justify-content: center; font-size: 11.5px; padding: 8px 8px; }
-  .main { padding: 16px; }
-  .topbar { flex-wrap: wrap; gap: 8px; }
-  .cardrow, .cardrow-5, .cardrow-3 { grid-template-columns: repeat(2, 1fr) !important; }
-  .split-main, .split-two, .split-two-14, .formgrid {
-    grid-template-columns: 1fr !important;
-  }
-  table { display: block; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch; }
-  .estimate { width: 100%; padding: 22px 16px; }
-  .modal-backdrop { padding: 10px; }
-  .prodlist { max-height: 240px; }
-  .est-parties { grid-template-columns: 1fr !important; gap: 12px; }
+/* Panels */
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; box-shadow: var(--shadow-sm); overflow-x: auto; }
+.panel h3 { margin: 0 0 12px; font-size: 14.5px; font-weight: 700; }
+.split-two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.split-main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; align-items: start; }
+
+/* Segmented buttons */
+.segrow { display: flex; gap: 8px; margin-bottom: 14px; }
+.segbtn { flex: 1; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: #FFF; font-size: 13.5px; font-weight: 600; cursor: pointer; transition: all 0.15s ease; color: var(--ink-soft); }
+.segbtn.wholesale.active { background: var(--ok-soft); border-color: #2E7D32; color: #2E7D32; }
+.segbtn.retail.active { background: var(--low-soft); border-color: #A32D2D; color: #A32D2D; }
+
+/* Forms */
+.formgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.field label { font-size: 11.5px; color: var(--ink-soft); font-weight: 600; }
+.field input, .field select { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; font-size: 13.5px; background: #FFF; color: var(--ink); transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+.field input:focus, .field select:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px rgba(214,67,31,0.12); }
+
+/* Search */
+.searchwrap { position: relative; margin-bottom: 12px; }
+.searchwrap input { width: 100%; padding: 10px 12px 10px 34px; border: 1px solid var(--line); border-radius: 9px; font-size: 13.5px; }
+.searchwrap input:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px rgba(214,67,31,0.12); }
+.searchwrap svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); opacity: 0.5; }
+
+/* Product list */
+.prodlist { max-height: 400px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
+.prodrow { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); cursor: pointer; transition: background 0.12s ease; gap: 10px; flex-wrap: wrap; }
+.prodrow:last-child { border-bottom: 0; }
+.prodrow:hover { background: #FAF7F0; }
+.pname { font-weight: 600; font-size: 13.5px; }
+.pmeta { font-size: 11.5px; color: var(--ink-soft); margin-top: 3px; }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 480px; }
+th, td { padding: 10px 8px; border: 1px solid var(--line); text-align: left; }
+thead th { font-weight: 700; font-size: 11.5px; color: var(--ink); background: #F6F1E4; text-transform: uppercase; letter-spacing: 0.3px; }
+tbody tr:hover { background: #FBF8F1; }
+
+/* Badges */
+.badge { display: inline-block; padding: 4px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.2px; }
+.badge.ok { background: var(--ok-soft); color: #2E7D32; }
+.badge.low { background: var(--low-soft); color: #A32D2D; }
+.badge.wholesale { background: var(--ok-soft); color: #2E7D32; }
+.badge.retail { background: var(--low-soft); color: #A32D2D; }
+
+.emptystate { padding: 20px; text-align: center; color: var(--ink-soft); font-size: 12.5px; }
+
+/* Buttons */
+.primarybtn { width: 100%; padding: 12px; border: 0; border-radius: 10px; background: linear-gradient(135deg, var(--brand), var(--brand-dark)); color: #FFF; font-weight: 700; font-size: 13.5px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 3px 10px rgba(214,67,31,0.3); transition: transform 0.12s ease, box-shadow 0.12s ease; }
+.primarybtn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 5px 14px rgba(214,67,31,0.38); }
+.primarybtn:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+.ghostbtn { padding: 9px 14px; border: 1px solid var(--line); border-radius: 9px; background: #FFF; font-size: 12.5px; font-weight: 600; color: var(--ink); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: background 0.12s ease, border-color 0.12s ease; white-space: nowrap; }
+.ghostbtn:hover:not(:disabled) { background: #F6F1E6; border-color: #D8CDB4; }
+.ghostbtn:disabled { opacity: 0.45; cursor: not-allowed; }
+.iconbtn { padding: 7px; border: 0; border-radius: 7px; background: transparent; cursor: pointer; color: var(--ink-soft); transition: background 0.12s ease, color 0.12s ease; }
+.iconbtn:hover { background: #F0E9D9; color: var(--ink); }
+
+/* Totals */
+.totalrow { display: flex; justify-content: space-between; align-items: center; font-size: 12.5px; padding: 7px 0; color: var(--ink-soft); flex-wrap: wrap; gap: 6px; }
+.totalrow.grand { font-weight: 800; font-size: 15.5px; color: var(--ink); border-top: 1.5px dashed var(--line); margin-top: 8px; padding-top: 10px; }
+.fuse { height: 1px; background: repeating-linear-gradient(90deg, var(--line) 0 12px, transparent 12px 18px); margin: 12px 0; }
+
+.modal-backdrop { background: rgba(20,16,10,0.45); display: flex; align-items: flex-start; justify-content: center; padding-top: 40px; backdrop-filter: blur(2px); overflow-y: auto; }
+
+/* ===== RESPONSIVE ===== */
+@media (max-width: 1024px) {
+  .cardrow-5 { grid-template-columns: repeat(3, 1fr); }
+  .split-main { grid-template-columns: 1fr; }
+  .sidebar { width: 200px; }
+  .main { padding: 18px 16px 40px; }
 }
 
-@media (max-width: 520px) {
-  .cardrow, .cardrow-5, .cardrow-3 { grid-template-columns: 1fr !important; }
-  .segrow { flex-direction: column; }
-  .metric .value { font-size: 18px; }
-  .est-orderbar { flex-direction: column; gap: 4px; align-items: flex-start; }
-  .navbtn { font-size: 11px; padding: 7px; }
+@media (max-width: 768px) {
+  .app-root { flex-direction: column; }
+
+  .mobile-topbar { display: flex; align-items: center; gap: 12px; background: linear-gradient(135deg, var(--side-bg), var(--side-bg-2)); padding: 14px 16px; position: sticky; top: 0; z-index: 40; box-shadow: 0 2px 10px rgba(0,0,0,0.15); }
+  .hamburger { background: rgba(255,255,255,0.08); border: 0; border-radius: 8px; padding: 8px; color: #FFF; cursor: pointer; display: flex; align-items: center; }
+  .mobile-brand { color: #FFF; font-weight: 800; font-size: 15px; }
+
+  .sidebar-overlay { display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 55; }
+
+  .sidebar { position: fixed; top: 0; left: 0; height: 100vh; width: 250px; transform: translateX(-100%); transition: transform 0.25s ease; z-index: 60; box-shadow: 4px 0 20px rgba(0,0,0,0.3); }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-close { display: flex; align-items: center; justify-content: center; position: absolute; top: 14px; right: 12px; background: rgba(255,255,255,0.08); border: 0; border-radius: 7px; padding: 6px; color: #FFF; cursor: pointer; }
+
+  .main { padding: 14px 12px 40px; }
+  .cardrow-5, .cardrow-3 { grid-template-columns: repeat(2, 1fr); }
+  .split-two { grid-template-columns: 1fr; }
+  .formgrid { grid-template-columns: 1fr; }
+  .pagetitle { font-size: 17px; }
+  .panel { padding: 14px; }
+}
+
+@media (max-width: 480px) {
+  .cardrow-5, .cardrow-3 { grid-template-columns: 1fr; }
+  .metric .value { font-size: 17px; }
 }
 `;
