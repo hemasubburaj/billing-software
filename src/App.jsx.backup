@@ -7,29 +7,6 @@ import {
   Truck, CalendarClock, BarChart3, Settings as SettingsIcon, Download, ShieldAlert, Building2, Menu
 } from "lucide-react";
 
-
-/* =========================================================
-   PERMANENT APP STORAGE
-   Data survives refresh / reload
-   ========================================================= */
-
-const appStorage = {
-  async get(key) {
-    const value = localStorage.getItem(key);
-    return value === null ? null : { value };
-  },
-
-  async set(key, value) {
-    localStorage.setItem(key, value);
-    return true;
-  },
-
-  async delete(key) {
-    localStorage.removeItem(key);
-    return true;
-  }
-};
-
 const KEYS = {
   products: "spark-billing-products",
   customers: "spark-billing-customers",
@@ -142,7 +119,7 @@ export default function App() {
     (async () => {
       const load = async (key, fallback) => {
         try {
-          const r = await appStorage.get(key);
+          const r = await window.storage.get(key);
           if (r && r.value) return JSON.parse(r.value);
         } catch (e) {}
         return fallback;
@@ -164,7 +141,7 @@ export default function App() {
 
   async function persist(key, setter, next) {
     setter(next);
-    try { await appStorage.set(key, JSON.stringify(next)); } catch (e) {}
+    try { await window.storage.set(key, JSON.stringify(next)); } catch (e) {}
   }
   const persistProducts = (next) => persist(KEYS.products, setProducts, next);
   const persistCustomers = (next) => persist(KEYS.customers, setCustomers, next);
