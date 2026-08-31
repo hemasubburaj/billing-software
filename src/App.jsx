@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
 import * as XLSX from "xlsx";
 import {
   LayoutDashboard, Receipt, Package, FileText, Plus, Trash2,
@@ -63,9 +63,7 @@ const defaultSettings = {
   email: "",
   website: "",
   gstEnabled: true,
-  cgstRate: 9,
-  sgstRate: 9,
-  igstRate: 18,
+  gstRate: 18,
   licenseNumber: "",
   licenseExpiry: "",
   seasonalMode: false,
@@ -111,11 +109,10 @@ export default function App() {
   const [customerType, setCustomerType] = useState("wholesale");
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
-  const [customerPlace, setCustomerPlace] = useState("");
   const [discountPct, setDiscountPct] = useState(0);
-  const [taxType, setTaxType] = useState("intra");
+  const [gstRate, setGstRate] = useState(defaultSettings.gstRate);
   const [selectedAgentId, setSelectedAgentId] = useState("");
-  const [customGstPct, setCustomGstPct] = useState("");
+  const [selectedUserId, setSelectedUserId] = useState("");
   const [productQuery, setProductQuery] = useState("");
   const [viewInvoice, setViewInvoice] = useState(null);
   const [viewQuotation, setViewQuotation] = useState(null);
@@ -239,15 +236,9 @@ export default function App() {
   const subtotal = cart.reduce((s, c) => s + lineTotal(c), 0);
   const discountAmt = (subtotal * (Number(discountPct) || 0)) / 100;
   const taxable = Math.max(0, subtotal - discountAmt);
-  const effectiveGstPct = customGstPct !== ""
-    ? Number(customGstPct) || 0
-    : (taxType === "intra"
-        ? (Number(settings.cgstRate) || 0) + (Number(settings.sgstRate) || 0)
-        : (Number(settings.igstRate) || 0));
-  const cgstAmt = settings.gstEnabled && taxType === "intra" ? (taxable * effectiveGstPct) / 2 / 100 : 0;
-  const sgstAmt = settings.gstEnabled && taxType === "intra" ? (taxable * effectiveGstPct) / 2 / 100 : 0;
-  const igstAmt = settings.gstEnabled && taxType === "inter" ? (taxable * effectiveGstPct) / 100 : 0;
-  const grandTotal = taxable + cgstAmt + sgstAmt + igstAmt;
+  const effectiveGstRate = Number(gstRate) || 0;
+  const gstAmt = settings.gstEnabled ? (taxable * effectiveGstRate) / 100 : 0;
+  const grandTotal = taxable + gstAmt;
 
   function nextQuoteNo() {
     const n = (settings.quoteCounter || 0) + 1;
@@ -268,8 +259,8 @@ export default function App() {
     const { no, counter } = nextQuoteNo();
     const name = customerName.trim() || "Walk-in customer";
     const phone = customerPhone.trim();
-    const place = customerPlace.trim();
     const agent = agents.find((a) => a.id === selectedAgentId);
+    const staffUser = users.find((u) => u.id === selectedUserId);
 
     const quotation = {
       id: uid(),
@@ -277,18 +268,18 @@ export default function App() {
       date: todayStr(),
       customerName: name,
       customerPhone: phone,
-      customerPlace: place,
       customerType,
       agentId: agent ? agent.id : null,
       agentName: agent ? agent.name : "",
+      createdByUserId: staffUser ? staffUser.id : null,
+      createdByUserName: staffUser ? staffUser.name : "",
       items: cart.map((c) => ({
         productId: c.productId, name: c.name, subunit: c.subunit, caseContent: c.caseContent, mode: c.mode,
         qty: c.qty, price: c.price, costPrice: c.costPrice || 0, total: lineTotal(c),
       })),
       discountPct: Number(discountPct) || 0,
       subtotal, discountAmt,
-      gstEnabled: settings.gstEnabled, taxType, cgstRate: settings.cgstRate, sgstRate: settings.sgstRate, igstRate: settings.igstRate,
-      cgstAmt, sgstAmt, igstAmt,
+      gstEnabled: settings.gstEnabled, gstRate: effectiveGstRate, gstAmt,
       total: grandTotal,
       status: "pending",
       invoiceId: null,
@@ -297,7 +288,7 @@ export default function App() {
     await persistQuotations([quotation, ...quotations]);
     await persistSettings({ ...settings, quoteCounter: counter });
 
-    setCart([]); setCustomerName(""); setCustomerPhone(""); setCustomerPlace(""); setDiscountPct(0); setSelectedAgentId("");
+    setCart([]); setCustomerName(""); setCustomerPhone(""); setDiscountPct(0); setSelectedAgentId(""); setSelectedUserId("");
     setViewQuotation(quotation);
   }
 
@@ -313,21 +304,21 @@ export default function App() {
       const existing = customers.find((c) => c.phone === quotation.customerPhone);
       if (existing) {
         custId = existing.id;
-        nextCustomers = customers.map((c) => (c.id === existing.id ? { ...c, balanceDue: (c.balanceDue || 0) + due, type: quotation.customerType, location: quotation.customerPlace || c.location } : c));
+        nextCustomers = customers.map((c) => (c.id === existing.id ? { ...c, balanceDue: (c.balanceDue || 0) + due, type: quotation.customerType } : c));
       } else {
         custId = uid();
-        nextCustomers = [...customers, { id: custId, name: quotation.customerName, phone: quotation.customerPhone, address: "", location: quotation.customerPlace || "", identType: "GSTIN", identValue: "", type: quotation.customerType, balanceDue: due }];
+        nextCustomers = [...customers, { id: custId, name: quotation.customerName, phone: quotation.customerPhone, address: "", identType: "GSTIN", identValue: "", type: quotation.customerType, balanceDue: due }];
       }
       await persistCustomers(nextCustomers);
     }
 
     const invoice = {
       id: uid(), invoiceNo: no, date: todayStr(), customerId: custId,
-      customerName: quotation.customerName, customerPhone: quotation.customerPhone, customerPlace: quotation.customerPlace || "", customerType: quotation.customerType,
+      customerName: quotation.customerName, customerPhone: quotation.customerPhone, customerType: quotation.customerType,
       agentId: quotation.agentId || null, agentName: quotation.agentName || "",
+      createdByUserId: quotation.createdByUserId || null, createdByUserName: quotation.createdByUserName || "",
       items: quotation.items, discountPct: quotation.discountPct, subtotal: quotation.subtotal, discountAmt: quotation.discountAmt,
-      gstEnabled: quotation.gstEnabled, taxType: quotation.taxType, cgstRate: quotation.cgstRate, sgstRate: quotation.sgstRate, igstRate: quotation.igstRate,
-      cgstAmt: quotation.cgstAmt, sgstAmt: quotation.sgstAmt, igstAmt: quotation.igstAmt || 0,
+      gstEnabled: quotation.gstEnabled, gstRate: quotation.gstRate || 0, gstAmt: quotation.gstAmt || 0,
       total, paymentMode: payMode, amountPaid: paid, balanceDue: due,
       quoteNo: quotation.quoteNo, returns: [], docType: "Original",
     };
@@ -497,10 +488,10 @@ export default function App() {
         {tab === "bill" && (
           <BillTab {...{
             products: filteredProducts, productQuery, setProductQuery, cart, addToCart, updateCartQty, updateCartMode, updateCartPrice, removeFromCart,
-            customerType, setCustomerType, customerName, setCustomerName, customerPhone, setCustomerPhone, customerPlace, setCustomerPlace, customers,
-            discountPct, setDiscountPct, subtotal, discountAmt, taxable, cgstAmt, sgstAmt, igstAmt, taxType, setTaxType,
+            customerType, setCustomerType, customerName, setCustomerName, customerPhone, setCustomerPhone, customers,
+            discountPct, setDiscountPct, gstRate, setGstRate, subtotal, discountAmt, taxable, gstAmt,
             grandTotal, saveQuotation, settings, agents, selectedAgentId, setSelectedAgentId, addProduct, units,
-            customGstPct, setCustomGstPct,
+            users, selectedUserId, setSelectedUserId,
           }} />
         )}
         {tab === "quotations" && (
@@ -510,7 +501,7 @@ export default function App() {
           <CustomersTab {...{ customers, invoices, recordCustomerPayment, deleteCustomer, updateCustomer: persistCustomers }} />
         )}
         {tab === "agents" && (
-          <AgentsTab {...{ agents, addAgent, deleteAgent }} />
+          <AgentsTab {...{ agents, addAgent, deleteAgent, invoices }} />
         )}
         {tab === "products" && (
           <ProductsTab {...{ products, addProduct, updateProduct, deleteProduct, units }} />
@@ -528,7 +519,7 @@ export default function App() {
           <InvoicesTab {...{ invoices, setViewInvoice, returnFromInvoice }} />
         )}
         {tab === "reports" && (
-          <ReportsTab {...{ invoices, products }} />
+          <ReportsTab {...{ invoices, products, agents, users }} />
         )}
         {tab === "settings" && (
           <SettingsTab {...{ settings, setSettings, persistSettings, resetCounter }} />
@@ -624,14 +615,16 @@ function DashboardTab({ totalQuotationAmount, totalSalesAmount, todayRevenue, wh
 
       <div className="panel">
         <h3>Last 7 days</h3>
-        <div style={{ height: 180 }}>
+        <div style={{ height: 220 }}>
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} barGap={2}>
+            <BarChart data={chartData} barGap={4} barCategoryGap="30%">
+              <CartesianGrid stroke="#E5DDCB" strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#756B5D" }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 11, fill: "#756B5D" }} axisLine={false} tickLine={false} width={40} />
               <Tooltip formatter={(v) => fmt(v)} contentStyle={{ fontSize: 12, borderRadius: 8 }} />
-              <Bar dataKey="wholesale" stackId="a" fill="#B07C1F" />
-              <Bar dataKey="retail" stackId="a" fill="#D6431F" radius={[3, 3, 0, 0]} />
+              <Legend wrapperStyle={{ fontSize: 12 }} iconType="circle" />
+              <Bar dataKey="wholesale" name="Wholesale" fill="#B07C1F" maxBarSize={36} radius={[3, 3, 0, 0]} />
+              <Bar dataKey="retail" name="Retail" fill="#D6431F" maxBarSize={36} radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -690,22 +683,19 @@ function DashboardTab({ totalQuotationAmount, totalSalesAmount, todayRevenue, wh
 function BillTab(props) {
   const {
     products, productQuery, setProductQuery, cart, addToCart, updateCartQty, updateCartMode, updateCartPrice, removeFromCart,
-    customerType, setCustomerType, customerName, setCustomerName, customerPhone, setCustomerPhone, customerPlace, setCustomerPlace, customers,
-    discountPct, setDiscountPct, subtotal, discountAmt, cgstAmt, sgstAmt, igstAmt, taxType, setTaxType,
+    customerType, setCustomerType, customerName, setCustomerName, customerPhone, setCustomerPhone, customers,
+    discountPct, setDiscountPct, gstRate, setGstRate, subtotal, discountAmt, gstAmt,
     grandTotal, saveQuotation, settings, agents, selectedAgentId, setSelectedAgentId, addProduct, units,
-    customGstPct, setCustomGstPct,
+    users, selectedUserId, setSelectedUserId,
   } = props;
 
   const [showNewProduct, setShowNewProduct] = useState(false);
   const blankNewProduct = { name: "", category: "", subunit: (units && units[0]) || "Pcs", caseContent: 1, sku: "", wholesalePrice: 0, retailPrice: 0, costPrice: 0, stock: 0, lowStock: 5 };
   const [newProduct, setNewProduct] = useState(blankNewProduct);
 
-  const gstRate = taxType === "intra" ? (Number(settings.cgstRate) || 0) + (Number(settings.sgstRate) || 0) : (Number(settings.igstRate) || 0);
-  const gstAmt = taxType === "intra" ? cgstAmt + sgstAmt : igstAmt;
-
   function submitNewProduct() {
     if (!newProduct.name.trim()) return;
-    const created = addProduct({
+    addProduct({
       ...newProduct,
       category: newProduct.category.trim() || "General",
       caseContent: Number(newProduct.caseContent) || 1,
@@ -715,7 +705,6 @@ function BillTab(props) {
       stock: Number(newProduct.stock) || 0,
       lowStock: Number(newProduct.lowStock) || 5,
     });
-    if (created) addToCart(created);
     setNewProduct(blankNewProduct);
     setShowNewProduct(false);
   }
@@ -742,11 +731,6 @@ function BillTab(props) {
               <datalist id="cust-phones">{customers.map((c) => <option key={c.id} value={c.phone} />)}</datalist>
             </div>
             <div className="field">
-              <label>Place (optional)</label>
-              <input list="cust-places" placeholder="Sivakasi, Sattur..." value={customerPlace} onChange={(e) => setCustomerPlace(e.target.value)} />
-              <datalist id="cust-places">{customers.map((c) => <option key={c.id} value={c.location || ""} />)}</datalist>
-            </div>
-            <div className="field">
               <label>Agent (optional)</label>
               <select value={selectedAgentId} onChange={(e) => setSelectedAgentId(e.target.value)}>
                 <option value="">No agent</option>
@@ -754,10 +738,10 @@ function BillTab(props) {
               </select>
             </div>
             <div className="field">
-              <label>GST type</label>
-              <select value={taxType} onChange={(e) => setTaxType(e.target.value)}>
-                <option value="intra">Intrastate (CGST + SGST)</option>
-                <option value="inter">Interstate (IGST)</option>
+              <label>Created by (staff)</label>
+              <select value={selectedUserId} onChange={(e) => setSelectedUserId(e.target.value)}>
+                <option value="">Not recorded</option>
+                {(users || []).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
               </select>
             </div>
           </div>
@@ -772,7 +756,7 @@ function BillTab(props) {
 
             {showNewProduct && (
               <div style={{ background: "#FBF6EC", border: "0.5px solid var(--line)", borderRadius: 8, padding: 12, marginBottom: 12 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Customer asked for a new product — add it here</div>
+                <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Customer asked for a new product — save it here, then search & add it below</div>
                 <div className="formgrid" style={{ marginBottom: 8 }}>
                   <div className="field"><label>Product name</label><input value={newProduct.name} onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })} /></div>
                   <div className="field"><label>Category</label><input value={newProduct.category} onChange={(e) => setNewProduct({ ...newProduct, category: e.target.value })} /></div>
@@ -788,7 +772,7 @@ function BillTab(props) {
                   <div className="field"><label>Cost price</label><input type="number" value={newProduct.costPrice} onChange={(e) => setNewProduct({ ...newProduct, costPrice: e.target.value })} /></div>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button className="primarybtn" style={{ width: "auto", padding: "8px 16px" }} onClick={submitNewProduct}>Add & put in quotation</button>
+                  <button className="primarybtn" style={{ width: "auto", padding: "8px 16px" }} onClick={submitNewProduct}>Save to products</button>
                   <button className="ghostbtn" onClick={() => setShowNewProduct(false)}>Cancel</button>
                 </div>
               </div>
@@ -821,19 +805,22 @@ function BillTab(props) {
           <h3>Quotation summary</h3>
           {cart.length === 0 ? <div className="emptystate">Add products from the left to start a quotation.</div> : (
             <table>
-              <thead><tr><th>Item</th><th style={{ width: 100 }}>Unit</th><th style={{ width: 56 }}>Qty</th><th style={{ width: 64 }}>Price</th><th style={{ width: 26 }}></th></tr></thead>
+              <thead><tr><th>Item</th><th style={{ width: 110 }}>Mode</th><th style={{ width: 70 }}>Qty</th><th style={{ width: 74 }}>Rate</th><th style={{ width: 26 }}></th></tr></thead>
               <tbody>
                 {cart.map((c) => (
                   <tr key={c.productId}>
                     <td><div style={{ fontWeight: 500 }}>{c.name}</div><div style={{ fontSize: 11, color: "var(--ink-soft)" }}>{fmt(lineTotal(c))}</div></td>
                     <td>
                       <select value={c.mode} onChange={(e) => updateCartMode(c.productId, e.target.value)} style={{ padding: "5px 4px", fontSize: 11.5 }}>
-                        <option value="case">Case ({c.caseContent} {c.subunit})</option>
-                        <option value="subunit">{c.subunit} (loose)</option>
+                        <option value="case">Case</option>
+                        <option value="subunit">{c.subunit}</option>
                       </select>
+                      <div style={{ fontSize: 10, color: "var(--ink-soft)", marginTop: 2 }}>
+                        {c.mode === "case" ? `1 Case = ${c.caseContent} ${c.subunit}` : `Loose ${c.subunit}`}
+                      </div>
                     </td>
-                    <td><input type="number" min="1" value={c.qty} onChange={(e) => updateCartQty(c.productId, parseInt(e.target.value || "1", 10))} style={{ padding: "5px 6px", fontSize: 13.5, fontWeight: 600, textAlign: "center" }} /></td>
-                    <td><input type="number" min="0" value={c.price} onChange={(e) => updateCartPrice(c.productId, parseFloat(e.target.value || "0"))} style={{ padding: "5px 6px", fontSize: 12 }} /></td>
+                    <td><input type="number" min="1" value={c.qty} onChange={(e) => updateCartQty(c.productId, parseInt(e.target.value || "1", 10))} style={{ padding: "5px 6px", fontSize: 12.5, width: "100%", boxSizing: "border-box" }} /></td>
+                    <td><input type="number" min="0" value={c.price} onChange={(e) => updateCartPrice(c.productId, parseFloat(e.target.value || "0"))} style={{ padding: "5px 6px", fontSize: 12.5, width: "100%", boxSizing: "border-box" }} /></td>
                     <td><button className="iconbtn" onClick={() => removeFromCart(c.productId)}><Trash2 size={14} /></button></td>
                   </tr>
                 ))}
@@ -851,20 +838,13 @@ function BillTab(props) {
           <div className="totalrow"><span>Subtotal</span><span className="mono">{fmt(subtotal)}</span></div>
           <div className="totalrow"><span>Discount</span><span className="mono">-{fmt(discountAmt)}</span></div>
           {settings.gstEnabled && (
-            <div className="totalrow">
-              <span>
-                GST %{" "}
-                <input
-                  type="number"
-                  min="0"
-                  placeholder={gstRate}
-                  value={customGstPct}
-                  onChange={(e) => setCustomGstPct(e.target.value)}
-                  style={{ width: 50, padding: "2px 5px", fontSize: 11.5, textAlign: "right", marginLeft: 4 }}
-                />
-              </span>
-              <span className="mono">{fmt(gstAmt)}</span>
-            </div>
+            <>
+              <div className="field" style={{ marginBottom: 10 }}>
+                <label>GST (%)</label>
+                <input type="number" min="0" max="100" step="0.01" value={gstRate} onChange={(e) => setGstRate(e.target.value)} />
+              </div>
+              <div className="totalrow"><span>GST ({effectiveGstRate}%)</span><span className="mono">{fmt(gstAmt)}</span></div>
+            </>
           )}
           <div className="totalrow grand"><span>Grand total</span><span className="mono">{fmt(grandTotal)}</span></div>
 
@@ -983,15 +963,27 @@ function UsersTab({ users, addUser, deleteUser }) {
   );
 }
 
-function AgentsTab({ agents, addAgent, deleteAgent }) {
+function AgentsTab({ agents, addAgent, deleteAgent, invoices }) {
   const [name, setName] = useState("");
   const [mobile, setMobile] = useState("");
+  const [commissionPct, setCommissionPct] = useState(0);
 
   function submit() {
     if (!name.trim()) return;
-    addAgent({ name: name.trim(), mobile: mobile.trim() });
-    setName(""); setMobile("");
+    addAgent({ name: name.trim(), mobile: mobile.trim(), commissionPct: Number(commissionPct) || 0 });
+    setName(""); setMobile(""); setCommissionPct(0);
   }
+
+  const stats = useMemo(() => {
+    const map = {};
+    (invoices || []).forEach((inv) => {
+      if (!inv.agentId) return;
+      if (!map[inv.agentId]) map[inv.agentId] = { sales: 0, count: 0 };
+      map[inv.agentId].sales += inv.total;
+      map[inv.agentId].count += 1;
+    });
+    return map;
+  }, [invoices]);
 
   return (
     <>
@@ -1001,19 +993,30 @@ function AgentsTab({ agents, addAgent, deleteAgent }) {
         <div className="formgrid" style={{ marginBottom: 10 }}>
           <div className="field"><label>Agent name</label><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Kannan - Sattur" /></div>
           <div className="field"><label>Mobile number</label><input value={mobile} onChange={(e) => setMobile(e.target.value)} /></div>
+          <div className="field"><label>Commission %</label><input type="number" min="0" max="100" value={commissionPct} onChange={(e) => setCommissionPct(e.target.value)} /></div>
         </div>
         <button className="primarybtn" style={{ width: "auto", padding: "9px 18px" }} onClick={submit}>Add agent</button>
       </div>
       <div className="panel">
         {agents.length === 0 ? <div className="emptystate">No agents yet.</div> : (
           <table>
-            <thead><tr><th>Agent name</th><th>Mobile</th><th></th></tr></thead>
+            <thead><tr><th>Agent name</th><th>Mobile</th><th>Commission</th><th>Bills</th><th>Sales</th><th>Commission earned</th><th></th></tr></thead>
             <tbody>
-              {agents.map((a) => (
-                <tr key={a.id}><td style={{ fontWeight: 500 }}>{a.name}</td><td>{a.mobile}</td>
-                  <td><button className="iconbtn" onClick={() => deleteAgent(a.id)}><Trash2 size={14} /></button></td>
-                </tr>
-              ))}
+              {agents.map((a) => {
+                const s = stats[a.id] || { sales: 0, count: 0 };
+                const earned = (s.sales * (a.commissionPct || 0)) / 100;
+                return (
+                  <tr key={a.id}>
+                    <td style={{ fontWeight: 500 }}>{a.name}</td>
+                    <td>{a.mobile}</td>
+                    <td>{a.commissionPct || 0}%</td>
+                    <td>{s.count}</td>
+                    <td className="mono">{fmt(s.sales)}</td>
+                    <td className="mono">{fmt(earned)}</td>
+                    <td><button className="iconbtn" onClick={() => deleteAgent(a.id)}><Trash2 size={14} /></button></td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -1131,10 +1134,13 @@ function CustomersTab({ customers, invoices, recordCustomerPayment, deleteCustom
       <div className="panel">
         {customers.length === 0 ? <div className="emptystate">No customers yet. They're added automatically when you bill with a phone number.</div> : (
           <table>
-            <thead><tr><th>Party name</th><th>Phone</th><th>Identification</th><th>Type</th><th>Balance due</th><th></th></tr></thead>
+            <thead><tr><th>Party name</th><th>Phone</th><th>Identification</th><th>Type</th><th>Orders</th><th>Avg order</th><th>Last purchase</th><th>Balance due</th><th></th></tr></thead>
             <tbody>
               {customers.map((c) => {
                 const history = invoices.filter((i) => i.customerId === c.id);
+                const totalSpent = history.reduce((s, h) => s + h.total, 0);
+                const avgOrder = history.length ? totalSpent / history.length : 0;
+                const lastPurchase = history.length ? history.reduce((latest, h) => (h.date > latest ? h.date : latest), history[0].date) : null;
                 const ef = editForm[c.id] || { location: c.location || "", identType: c.identType || "GSTIN", identValue: c.identValue || "" };
                 return (
                   <React.Fragment key={c.id}>
@@ -1143,11 +1149,14 @@ function CustomersTab({ customers, invoices, recordCustomerPayment, deleteCustom
                       <td>{c.phone}</td>
                       <td style={{ fontSize: 12 }}>{c.identType && c.identValue ? `${c.identType}: ${c.identValue}` : "—"}</td>
                       <td><span className={`badge ${c.type}`}>{c.type}</span></td>
+                      <td>{history.length}</td>
+                      <td className="mono">{fmt(avgOrder)}</td>
+                      <td style={{ fontSize: 12 }}>{lastPurchase || "—"}</td>
                       <td className="mono" style={{ color: c.balanceDue > 0 ? "#A32D2D" : "var(--ink)" }}>{fmt(c.balanceDue || 0)}</td>
                       <td><button className="iconbtn" onClick={(e) => { e.stopPropagation(); deleteCustomer(c.id); }}><Trash2 size={14} /></button></td>
                     </tr>
                     {expanded === c.id && (
-                      <tr><td colSpan={6}>
+                      <tr><td colSpan={9}>
                         <div style={{ padding: "8px 4px" }}>
                           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Party details</div>
                           <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
@@ -1161,10 +1170,11 @@ function CustomersTab({ customers, invoices, recordCustomerPayment, deleteCustom
                               onChange={(e) => setEditForm({ ...editForm, [c.id]: { ...ef, identValue: e.target.value } })} />
                             <button className="ghostbtn" onClick={() => saveIdent(c)}>Save</button>
                           </div>
+                          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Lifetime value: <span className="mono">{fmt(totalSpent)}</span></div>
                           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Purchase history</div>
                           {history.length === 0 ? <div className="emptystate">No purchases yet.</div> : history.map((h) => (
                             <div key={h.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0" }}>
-                              <span>{h.invoiceNo} • {h.date}</span><span className="mono">{fmt(h.total)}</span>
+                              <span>{h.invoiceNo} • {h.date}{h.createdByUserName ? ` • by ${h.createdByUserName}` : ""}</span><span className="mono">{fmt(h.total)}</span>
                             </div>
                           ))}
                           {c.balanceDue > 0 && (
@@ -1466,7 +1476,7 @@ function InvoicesTab({ invoices, setViewInvoice, returnFromInvoice }) {
     const rows = invoices.map((inv) => ({
       Invoice: inv.invoiceNo, Date: inv.date, Customer: inv.customerName, Phone: inv.customerPhone,
       Type: inv.customerType, Subtotal: inv.subtotal, Discount: inv.discountAmt,
-      CGST: inv.cgstAmt || 0, SGST: inv.sgstAmt || 0, Total: inv.total, PaymentMode: inv.paymentMode, BalanceDue: inv.balanceDue || 0,
+      GST: inv.gstAmt || 0, Total: inv.total, PaymentMode: inv.paymentMode, BalanceDue: inv.balanceDue || 0,
     }));
     downloadXlsx(rows, "invoices.xlsx", "Invoices");
   }
@@ -1541,7 +1551,7 @@ function InvoicesTab({ invoices, setViewInvoice, returnFromInvoice }) {
   );
 }
 
-function ReportsTab({ invoices, products }) {
+function ReportsTab({ invoices, products, agents, users }) {
   const topProducts = useMemo(() => {
     const map = {};
     invoices.forEach((inv) => inv.items.forEach((it) => { map[it.name] = (map[it.name] || 0) + it.qty; }));
@@ -1574,17 +1584,40 @@ function ReportsTab({ invoices, products }) {
     return Object.values(map).sort((a, b) => b.revenue - a.revenue);
   }, [invoices]);
 
+  const agentPerformance = useMemo(() => {
+    return (agents || []).map((a) => {
+      const agentInvoices = invoices.filter((i) => i.agentId === a.id);
+      const sales = agentInvoices.reduce((s, i) => s + i.total, 0);
+      return { name: a.name, mobile: a.mobile, bills: agentInvoices.length, sales, commissionPct: a.commissionPct || 0, commission: (sales * (a.commissionPct || 0)) / 100 };
+    }).filter((a) => a.bills > 0).sort((a, b) => b.sales - a.sales);
+  }, [agents, invoices]);
+
+  const staffPerformance = useMemo(() => {
+    return (users || []).map((u) => {
+      const userInvoices = invoices.filter((i) => i.createdByUserId === u.id);
+      const sales = userInvoices.reduce((s, i) => s + i.total, 0);
+      return { name: u.name, bills: userInvoices.length, sales };
+    }).filter((u) => u.bills > 0).sort((a, b) => b.sales - a.sales);
+  }, [users, invoices]);
+
   const totalRevenue = invoices.reduce((s, i) => s + i.total, 0);
   const totalCost = invoices.reduce((s, i) => s + i.items.reduce((s2, it) => s2 + it.qty * (it.costPrice || 0), 0), 0);
   const profit = totalRevenue - totalCost;
   const marginPct = totalRevenue > 0 ? (profit / totalRevenue) * 100 : 0;
 
+  function exportAgentPerformance() {
+    downloadXlsx(agentPerformance.map((a) => ({ Agent: a.name, Mobile: a.mobile, Bills: a.bills, Sales: a.sales, CommissionPct: a.commissionPct, CommissionEarned: a.commission })), "agent_performance.xlsx", "Agents");
+  }
+  function exportStaffPerformance() {
+    downloadXlsx(staffPerformance.map((u) => ({ Staff: u.name, Bills: u.bills, Sales: u.sales })), "staff_performance.xlsx", "Staff");
+  }
+
   function exportSalesTax() {
     const rows = invoices.map((inv) => ({
       "Inv No & Date": `${inv.invoiceNo} ${inv.date}`, Party: inv.customerName,
       TaxableValue: inv.subtotal - inv.discountAmt,
-      CGST: inv.cgstAmt || 0, SGST: inv.sgstAmt || 0, IGST: inv.igstAmt || 0,
-      TaxAmount: (inv.cgstAmt || 0) + (inv.sgstAmt || 0) + (inv.igstAmt || 0), TotalAmount: inv.total,
+      GSTRate: inv.gstRate || 0, GST: inv.gstAmt || 0,
+      TaxAmount: inv.gstAmt || 0, TotalAmount: inv.total,
     }));
     downloadXlsx(rows, "sales_tax_report.xlsx", "Sales Tax");
   }
@@ -1619,11 +1652,12 @@ function ReportsTab({ invoices, products }) {
           {topProducts.length === 0 ? <div className="emptystate">No sales yet.</div> : (
             <div style={{ height: 200 }}>
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={topProducts} layout="vertical" margin={{ left: 10 }}>
+                <BarChart data={topProducts} layout="vertical" margin={{ left: 10 }} barCategoryGap="25%">
+                  <CartesianGrid stroke="#E5DDCB" strokeDasharray="3 3" horizontal={false} />
                   <XAxis type="number" tick={{ fontSize: 10, fill: "#756B5D" }} axisLine={false} tickLine={false} />
                   <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 10, fill: "#756B5D" }} axisLine={false} tickLine={false} />
                   <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
-                  <Bar dataKey="qty" fill="#D6431F" radius={[0, 3, 3, 0]} />
+                  <Bar dataKey="qty" name="Qty sold" fill="#D6431F" maxBarSize={22} radius={[0, 3, 3, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -1634,11 +1668,12 @@ function ReportsTab({ invoices, products }) {
           {monthly.length === 0 ? <div className="emptystate">No sales yet.</div> : (
             <div style={{ height: 200 }}>
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={monthly}>
+                <BarChart data={monthly} barCategoryGap="35%">
+                  <CartesianGrid stroke="#E5DDCB" strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="month" tick={{ fontSize: 10, fill: "#756B5D" }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 10, fill: "#756B5D" }} axisLine={false} tickLine={false} width={40} />
                   <Tooltip formatter={(v) => fmt(v)} contentStyle={{ fontSize: 12, borderRadius: 8 }} />
-                  <Bar dataKey="revenue" fill="#B07C1F" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="revenue" name="Revenue" fill="#B07C1F" maxBarSize={44} radius={[3, 3, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -1655,11 +1690,12 @@ function ReportsTab({ invoices, products }) {
           <>
             <div style={{ height: 180, marginBottom: 14 }}>
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={salesBySubunit}>
+                <BarChart data={salesBySubunit} barCategoryGap="30%">
+                  <CartesianGrid stroke="#E5DDCB" strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="subunit" tick={{ fontSize: 11, fill: "#756B5D" }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 10, fill: "#756B5D" }} axisLine={false} tickLine={false} width={40} />
                   <Tooltip formatter={(v) => fmt(v)} contentStyle={{ fontSize: 12, borderRadius: 8 }} />
-                  <Bar dataKey="revenue" fill="#D6431F" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="revenue" name="Revenue" fill="#D6431F" maxBarSize={44} radius={[3, 3, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -1680,6 +1716,52 @@ function ReportsTab({ invoices, products }) {
         )}
       </div>
 
+      <div className="split-two">
+        <div className="panel" style={{ marginBottom: 0 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h3>Agent performance</h3>
+            <button className="ghostbtn" onClick={exportAgentPerformance} disabled={agentPerformance.length === 0}><Download size={14} /> Export</button>
+          </div>
+          {agentPerformance.length === 0 ? <div className="emptystate">No agent-linked sales yet.</div> : (
+            <table>
+              <thead><tr><th>Agent</th><th>Bills</th><th>Sales</th><th>Comm%</th><th style={{ textAlign: "right" }}>Earned</th></tr></thead>
+              <tbody>
+                {agentPerformance.map((a) => (
+                  <tr key={a.name}>
+                    <td style={{ fontWeight: 500 }}>{a.name}</td>
+                    <td>{a.bills}</td>
+                    <td className="mono">{fmt(a.sales)}</td>
+                    <td>{a.commissionPct}%</td>
+                    <td style={{ textAlign: "right" }} className="mono">{fmt(a.commission)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="panel" style={{ marginBottom: 0 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h3>Staff performance</h3>
+            <button className="ghostbtn" onClick={exportStaffPerformance} disabled={staffPerformance.length === 0}><Download size={14} /> Export</button>
+          </div>
+          {staffPerformance.length === 0 ? <div className="emptystate">No staff-attributed sales yet.</div> : (
+            <table>
+              <thead><tr><th>Staff</th><th>Bills</th><th style={{ textAlign: "right" }}>Sales</th></tr></thead>
+              <tbody>
+                {staffPerformance.map((u) => (
+                  <tr key={u.name}>
+                    <td style={{ fontWeight: 500 }}>{u.name}</td>
+                    <td>{u.bills}</td>
+                    <td style={{ textAlign: "right" }} className="mono">{fmt(u.sales)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+
       <div className="panel">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h3>Sales Tax Report</h3>
@@ -1687,18 +1769,17 @@ function ReportsTab({ invoices, products }) {
         </div>
         {invoices.length === 0 ? <div className="emptystate">No estimates yet.</div> : (
           <table>
-            <thead><tr><th>Inv.No & Date</th><th>Party</th><th>Taxable value</th><th>CGST</th><th>SGST</th><th>IGST</th><th>Tax amount</th><th style={{ textAlign: "right" }}>Total</th></tr></thead>
+            <thead><tr><th>Inv.No & Date</th><th>Party</th><th>Taxable value</th><th>GST %</th><th>GST</th><th>Tax amount</th><th style={{ textAlign: "right" }}>Total</th></tr></thead>
             <tbody>
               {invoices.map((inv) => {
-                const taxAmt = (inv.cgstAmt || 0) + (inv.sgstAmt || 0) + (inv.igstAmt || 0);
+                const taxAmt = inv.gstAmt || 0;
                 return (
                   <tr key={inv.id}>
                     <td style={{ fontSize: 12 }}>{inv.invoiceNo}<br />{inv.date}</td>
                     <td>{inv.customerName}</td>
                     <td className="mono">{fmt(inv.subtotal - inv.discountAmt)}</td>
-                    <td className="mono">{fmt(inv.cgstAmt || 0)}</td>
-                    <td className="mono">{fmt(inv.sgstAmt || 0)}</td>
-                    <td className="mono">{fmt(inv.igstAmt || 0)}</td>
+                    <td className="mono">{inv.gstRate || 0}%</td>
+                    <td className="mono">{fmt(inv.gstAmt || 0)}</td>
                     <td className="mono">{fmt(taxAmt)}</td>
                     <td style={{ textAlign: "right" }} className="mono">{fmt(inv.total)}</td>
                   </tr>
@@ -1773,10 +1854,15 @@ function SettingsTab({ settings, setSettings, persistSettings, resetCounter }) {
           Enable GST on bills
         </label>
         {local.gstEnabled && (
-          <div className="formgrid">
-            <div className="field"><label>CGST %</label><input type="number" value={local.cgstRate} onChange={(e) => setLocal({ ...local, cgstRate: e.target.value })} /></div>
-            <div className="field"><label>SGST %</label><input type="number" value={local.sgstRate} onChange={(e) => setLocal({ ...local, sgstRate: e.target.value })} /></div>
-          </div>
+          <>
+            <div className="field" style={{ maxWidth: 200 }}>
+              <label>GST rate %</label>
+              <input type="number" value={local.gstRate} onChange={(e) => setLocal({ ...local, gstRate: e.target.value })} />
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--ink-soft)", marginTop: 6 }}>
+              This rate is used as the default GST rate. You can change the GST percentage directly in each New quotation.
+            </div>
+          </>
         )}
       </div>
 
@@ -1801,8 +1887,6 @@ function ReceiptCard({ doc, kind, settings, onClose }) {
   const docNo = isEstimate ? doc.invoiceNo : doc.quoteNo;
   const docLabel = isEstimate ? "Invoice No" : "Quote No";
   const titleText = isEstimate ? "ESTIMATE BILL" : "QUOTATION";
-  const gstRate = doc.taxType === "inter" ? doc.igstRate : (Number(doc.cgstRate || 0) + Number(doc.sgstRate || 0));
-  const gstAmt = doc.taxType === "inter" ? doc.igstAmt : (Number(doc.cgstAmt || 0) + Number(doc.sgstAmt || 0));
 
   return (
     <div className="estimate" onClick={(e) => e.stopPropagation()}>
@@ -1833,7 +1917,6 @@ function ReceiptCard({ doc, kind, settings, onClose }) {
           <div className="est-label">{isEstimate ? "BILL TO" : "QUOTE FOR"}</div>
           <div className="est-name">{doc.customerName}</div>
           {doc.customerPhone && <div className="est-line">Mobile: {doc.customerPhone}</div>}
-          {doc.customerPlace && <div className="est-line">Place: {doc.customerPlace}</div>}
           <span className={`badge ${doc.customerType}`} style={{ marginTop: 4 }}>{doc.customerType}</span>
         </div>
       </div>
@@ -1873,7 +1956,7 @@ function ReceiptCard({ doc, kind, settings, onClose }) {
         <div className="est-totrow"><span>Subtotal</span><span>{fmt(doc.subtotal)}</span></div>
         <div className="est-totrow"><span>Discount ({doc.discountPct}%)</span><span>-{fmt(doc.discountAmt)}</span></div>
         {doc.gstEnabled && (
-          <div className="est-totrow"><span>GST ({gstRate}%)</span><span>{fmt(gstAmt)}</span></div>
+          <div className="est-totrow"><span>GST ({doc.gstRate || 0}%)</span><span>{fmt(doc.gstAmt || 0)}</span></div>
         )}
         <div className="est-totrow grand"><span>Grand total</span><span>{fmt(doc.total)}</span></div>
       </div>
@@ -1896,98 +1979,27 @@ function ReceiptCard({ doc, kind, settings, onClose }) {
     </div>
   );
 }
-const globalStyles = `@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+const globalStyles = `
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap');
 * { box-sizing: border-box; }
 .app-root {
   --bg: #F7F3EC; --panel: #FFFFFF; --ink: #211C15; --ink-soft: #756B5D;
   --accent: #D6431F; --accent-soft: #F5DCC9; --gold: #B07C1F; --gold-soft: #F1E3C4;
   --green: #3F6B4C; --green-soft: #E1EBDF; --line: #E5DDCB; --sidebar: #211C15; --sidebar-soft: #B8AC98;
   font-family: 'Inter', sans-serif; background: var(--bg); color: var(--ink);
-
-
-
-.app-root {
-  --bg: #F7F3EC;
-  --panel: #FFFFFF;
-  --ink: #211C15;
-  --ink-soft: #756B5D;
-  --accent: #D6431F;
-  --accent-soft: #F5DCC9;
-  --gold: #B07C1F;
-  --gold-soft: #F1E3C4;
-  --green: #3F6B4C;
-  --green-soft: #E1EBDF;
-  --line: #E5DDCB;
-  --sidebar: #211C15;
-  --sidebar-soft: #B8AC98;
-
-  font-family: 'Inter', sans-serif;
-  background: var(--bg);
-  color: var(--ink);
-
-  display: flex;
-  width: 100%;
-  min-width: 100%;
-  min-height: 100vh;
-  height: 100vh;
-
-  margin: 0;
-  padding: 0;
-
-  max-width: none;
-  border-radius: 0;
-  border: none;
-  box-shadow: none;
-  overflow: hidden;
+  display: flex; min-height: 100vh; width: 100%; box-sizing: border-box;
 }
-display: flex; width: 100%; min-width: 100%; height: 100%; min-height: 0; box-sizing: border-box; overflow: hidden;
-}
-
 .disp { font-family: 'Space Grotesk', sans-serif; }
 .mono { font-family: 'JetBrains Mono', monospace; }
-
-
-
-.sidebar {
-  width: 230px;
-  min-width: 230px;
-  height: 100vh;
-  min-height: 100vh;
-
-  background: var(--sidebar);
-  color: var(--sidebar-soft);
-
-  padding: 20px 14px;
-
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-
-  flex-shrink: 0;
-  overflow-y: auto;
-}
-
-
-
-
-
+.sidebar { width: 208px; background: var(--sidebar); color: var(--sidebar-soft); padding: 20px 14px; display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+.brand-row { display:flex; align-items:center; gap:8px; padding: 4px 10px 22px; }
 .brand-mark { width:10px; height:10px; border-radius:50%; background: var(--accent); box-shadow: 0 0 0 3px rgba(214,67,31,0.25); }
 .brand-name { color:#F7F3EC; font-size:15px; font-weight:700; letter-spacing:0.2px; }
 .navbtn { display:flex; align-items:center; gap:10px; padding: 9px 12px; border-radius:8px; cursor:pointer; font-size: 12.8px; font-weight: 500; color: var(--sidebar-soft); background: transparent; border: none; text-align:left; width:100%; }
 .navbtn:hover { background: rgba(247,243,236,0.08); color:#F7F3EC; }
 .navbtn.active { background: var(--accent); color: #FCEFE8; }
-
-.main {
-  flex: 1;
-  width: 100%;
-  min-width: 0;
-  min-height: 100vh;
-
-  padding: 32px 36px;
-
-  overflow-y: auto;
-  overflow-x: hidden;
-}
+.main { flex: 1; padding: 24px 28px; overflow-y: auto; }
 .topbar { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:22px; }
 .pagetitle { font-size:20px; font-weight:700; }
 .datepill { font-size:12px; color: var(--ink-soft); background: var(--panel); border:0.5px solid var(--line); padding:5px 10px; border-radius:20px; }
@@ -2064,6 +2076,7 @@ input[type=checkbox] { width:auto; }
 @media print { .est-close, .ghostbtn { display:none; } }
 .formgrid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
 .emptystate { text-align:center; padding: 30px 10px; color: var(--ink-soft); font-size:13px; }
+
 /* Layout helper classes (replace fragile inline grid-template-columns) */
 .cardrow-5 { grid-template-columns: repeat(5, 1fr); }
 .cardrow-3 { grid-template-columns: repeat(3, 1fr); }
@@ -2073,7 +2086,7 @@ input[type=checkbox] { width:auto; }
 
 /* ===== Responsive: tablet & mobile ===== */
 @media (max-width: 900px) {
-  .app-root { flex-direction: column; width: 100%; min-width: 100%; height: auto; min-height: auto; overflow: visible; }
+  .app-root { flex-direction: column; min-height: auto; }
   .sidebar {
     width: 100%; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center;
     padding: 12px; gap: 6px; position: sticky; top: 0; z-index: 10;
@@ -2100,5 +2113,4 @@ input[type=checkbox] { width:auto; }
   .est-orderbar { flex-direction: column; gap: 4px; align-items: flex-start; }
   .navbtn { font-size: 11px; padding: 7px; }
 }
-
 `;
