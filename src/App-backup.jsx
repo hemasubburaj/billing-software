@@ -107,9 +107,10 @@ export default function App() {
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [discountPct, setDiscountPct] = useState(0);
+  const [taxType, setTaxType] = useState("intra");
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [selectedUserId, setSelectedUserId] = useState("");
-  const [gstRate, setGstRate] = useState("");
+  const [customGstPct, setCustomGstPct] = useState("");
   const [pfAmount, setPfAmount] = useState("");
   const [productQuery, setProductQuery] = useState("");
   const [viewInvoice, setViewInvoice] = useState(null);
@@ -233,13 +234,8 @@ export default function App() {
   const subtotal = cart.reduce((s, c) => s + lineTotal(c), 0);
   const discountAmt = (subtotal * (Number(discountPct) || 0)) / 100;
   const taxable = Math.max(0, subtotal - discountAmt);
-  const effectiveGstRate =
-    gstRate !== "" ? (Number(gstRate) || 0) : (Number(settings.gstRate) || 0);
-
-  const gstAmt =
-    settings.gstEnabled
-      ? (taxable * effectiveGstRate) / 100
-      : 0;
+  const effectiveGstRate = customGstPct !== "" ? (Number(customGstPct) || 0) : (Number(settings.gstRate) || 0);
+  const gstAmt = settings.gstEnabled ? (taxable * effectiveGstRate) / 100 : 0;
   const pfAmt = Number(pfAmount) || 0;
   const grandTotal = taxable + gstAmt + pfAmt;
 
@@ -294,7 +290,7 @@ export default function App() {
     await persistQuotations([quotation, ...quotations]);
     await persistSettings({ ...settings, quoteCounter: counter });
 
-    setCart([]); setCustomerName(""); setCustomerPhone(""); setDiscountPct(0); setSelectedAgentId(""); setSelectedUserId(""); setGstRate(""); setPfAmount("");
+    setCart([]); setCustomerName(""); setCustomerPhone(""); setDiscountPct(0); setSelectedAgentId(""); setSelectedUserId(""); setCustomGstPct(""); setPfAmount("");
     setViewQuotation(quotation);
   }
 
@@ -503,10 +499,11 @@ export default function App() {
           <BillTab {...{
             products: filteredProducts, productQuery, setProductQuery, cart, addToCart, updateCartQty, updateCartMode, updateCartPrice, removeFromCart,
             customerType, setCustomerType, customerName, setCustomerName, customerPhone, setCustomerPhone, customers,
-            discountPct, setDiscountPct, subtotal, discountAmt, taxable, gstAmt,
+            discountPct, setDiscountPct, subtotal, discountAmt, taxable, gstAmt, taxType, setTaxType,
             grandTotal, saveQuotation, settings, agents, selectedAgentId, setSelectedAgentId, addProduct, units,
             users, selectedUserId, setSelectedUserId,
-            gstRate, setGstRate,
+            gstRate: effectiveGstRate,
+            customGstPct, setCustomGstPct,
             pfAmount, setPfAmount,
           }} />
         )}
@@ -700,8 +697,11 @@ function BillTab(props) {
   const {
     products, productQuery, setProductQuery, cart, addToCart, updateCartQty, updateCartMode, updateCartPrice, removeFromCart,
     customerType, setCustomerType, customerName, setCustomerName, customerPhone, setCustomerPhone, customers,
-    discountPct, setDiscountPct, subtotal, discountAmt, taxable, gstAmt, gstRate, setGstRate, grandTotal, saveQuotation, settings, agents, selectedAgentId, setSelectedAgentId, addProduct, units,
+    discountPct, setDiscountPct, subtotal, discountAmt, taxable, gstAmt, taxType, setTaxType,
+    grandTotal, saveQuotation, settings, agents, selectedAgentId, setSelectedAgentId, addProduct, units,
     users, selectedUserId, setSelectedUserId,
+    gstRate,
+    customGstPct, setCustomGstPct,
     pfAmount, setPfAmount,
   } = props;
 
@@ -762,7 +762,7 @@ function BillTab(props) {
             </div>
             <div className="field">
               <label>GST type</label>
-              <select value={gstRate} onChange={(e) => setGstRate(e.target.value)}>
+              <select value={taxType} onChange={(e) => setTaxType(e.target.value)}>
                 <option value="intra">Intrastate</option>
                 <option value="inter">Interstate</option>
               </select>
@@ -861,41 +861,36 @@ function BillTab(props) {
           <div className="totalrow"><span>Subtotal</span><span className="mono">{fmt(subtotal)}</span></div>
           <div className="totalrow"><span>Discount</span><span className="mono">-{fmt(discountAmt)}</span></div>
           {settings.gstEnabled && (
-            <>
-              <div className="field" style={{ marginBottom: 10 }}>
-                <label>GST (%)</label>
+            <div className="totalrow">
+              <span>
+                GST %{" "}
                 <input
                   type="number"
                   min="0"
-                  max="100"
-                  step="0.01"
-                  value={gstRate}
-                  onChange={(e) => setGstRate(e.target.value)}
+                  placeholder={gstRate}
+                  value={customGstPct}
+                  onChange={(e) => setCustomGstPct(e.target.value)}
+                  style={{ width: 50, padding: "2px 5px", fontSize: 11.5, textAlign: "right", marginLeft: 4 }}
                 />
-              </div>
-
-              <div className="totalrow">
-                <span>GST</span>
-                <span className="mono">{fmt(gstAmt)}</span>
-              </div>
-            </>
+              </span>
+              <span className="mono">{fmt(gstAmt)}</span>
+            </div>
           )}
-
           <div className="totalrow">
-  <span>
-    Packing & Forwarding (₹){" "}
-    <input
-      type="number"
-      min="0"
-      placeholder="0"
-      value={pfAmount}
-      onChange={(e) => setPfAmount(e.target.value)}
-      style={{ width: 60, padding: "2px 5px", fontSize: 11.5, textAlign: "right", marginLeft: 4 }}
-    />
-  </span>
-  <span className="mono">{fmt(Number(pfAmount) || 0)}</span>
-</div>
-<div className="totalrow grand"><span>Grand total</span><span className="mono">{fmt(grandTotal)}</span></div>
+            <span>
+              P&F (₹){" "}
+              <input
+                type="number"
+                min="0"
+                placeholder="0"
+                value={pfAmount}
+                onChange={(e) => setPfAmount(e.target.value)}
+                style={{ width: 60, padding: "2px 5px", fontSize: 11.5, textAlign: "right", marginLeft: 4 }}
+              />
+            </span>
+            <span className="mono">{fmt(Number(pfAmount) || 0)}</span>
+          </div>
+          <div className="totalrow grand"><span>Grand total</span><span className="mono">{fmt(grandTotal)}</span></div>
 
           <div style={{ marginTop: 14 }}>
             <button className="primarybtn" disabled={cart.length === 0} onClick={saveQuotation}>Save quotation <ArrowRight size={15} /></button>
