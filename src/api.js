@@ -1,161 +1,99 @@
-const API_BASE =
-  import.meta.env.VITE_API_URL ||
-  "https://billing-software-wlvw.onrender.com/api";
+// Talks to the Express/MongoDB backend. In dev, Vite proxies /api to the
+// backend (see vite.config.js); in production, set VITE_API_URL to your
+// deployed backend's URL (e.g. https://your-backend.onrender.com).
+const API_BASE = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
 
-// =========================
-// AUTH
-// =========================
+const TOKEN_KEY = "spark-billing-token";
+const USERNAME_KEY = "spark-billing-username";
+
+export function getToken() {
+  return localStorage.getItem(TOKEN_KEY);
+}
+export function getUsername() {
+  return localStorage.getItem(USERNAME_KEY);
+}
+export function setSession(token, username) {
+  localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(USERNAME_KEY, username);
+}
+export function clearSession() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USERNAME_KEY);
+}
+
+async function authedFetch(path, options = {}) {
+  const token = getToken();
+  let res;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options.headers || {}),
+      },
+    });
+  } catch (networkErr) {
+    console.error(`Network error calling ${path} — is the backend running / VITE_API_URL correct?`, networkErr);
+    throw networkErr;
+  }
+  if (res.status === 401) {
+    clearSession();
+    window.location.reload();
+    throw new Error("Session expired");
+  }
+  return res;
+}
 
 export async function login(username, password) {
-  const res = await fetch(`${API_BASE}/auth/login`, {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      username,
-      password,
-    }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
   });
-
   const data = await res.json();
-
-  if (!res.ok) {
-    throw new Error(data.error || `Login failed (${res.status})`);
-  }
-
-  localStorage.setItem("token", data.token);
-  localStorage.setItem("username", data.username);
-
+  if (!res.ok) throw new Error(data.error || "Login failed");
+  setSession(data.token, data.username);
   return data;
 }
 
 export async function register(username, password, businessName) {
-  const res = await fetch(`${API_BASE}/auth/register`, {
+  const res = await fetch(`${API_BASE}/api/auth/register`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      username,
-      password,
-      businessName,
-    }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password, businessName }),
   });
-
   const data = await res.json();
-
-  if (!res.ok) {
-    throw new Error(data.error || `Registration failed (${res.status})`);
-  }
-
-  localStorage.setItem("token", data.token);
-  localStorage.setItem("username", data.username);
-
+  if (!res.ok) throw new Error(data.error || "Registration failed");
+  setSession(data.token, data.username);
   return data;
 }
 
-// =========================
-// SESSION
-// =========================
-
-export function getToken() {
-  return localStorage.getItem("token");
-}
-
-export function getUsername() {
-  return localStorage.getItem("username") || "";
-}
-
-export function clearSession() {
-  localStorage.removeItem("token");
-  localStorage.removeItem("username");
-}
-
-// =========================
-// BACKEND STORAGE
-// =========================
-
-async function storageRequest(url, options = {}) {
-  const token = getToken();
-
-  const res = await fetch(`${API_BASE}${url}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      ...(options.headers || {}),
-    },
-  });
-
-  const data = await res.json().catch(() => ({}));
-
-  if (!res.ok) {
-    throw new Error(data.error || `Storage request failed (${res.status})`);
-  }
-
-  return data;
-}
-
-// window.storage compatible API
+// Implements the same shape as the Claude Artifacts `window.storage` API
+// (get/set/delete/list) so App.jsx doesn't need to change.
 export const apiStorage = {
-  async getItem(key) {
-    try {
-      const data = await storageRequest(
-        `/storage/${encodeURIComponent(key)}`
-      );
-
-      return data.value;
-    } catch (err) {
-      if (err.message.includes("404")) {
-        return null;
-      }
-
-      throw err;
-    }
+  async get(key) {
+    const res = await authedFetch(`/api/storage/${encodeURIComponent(key)}`);
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error("Storage get failed");
+    return res.json();
   },
-
-  async setItem(key, value) {
-    const data = await storageRequest(
-      `/storage/${encodeURIComponent(key)}`,
-      {
-        method: "PUT",
-        body: JSON.stringify({
-          value: String(value),
-        }),
-      }
-    );
-
-    return data.value;
+  async set(key, value) {
+    const res = await authedFetch(`/api/storage/${encodeURIComponent(key)}`, {
+      method: "PUT",
+      body: JSON.stringify({ value }),
+    });
+    if (!res.ok) throw new Error("Storage set failed");
+    return res.json();
   },
-
-  async removeItem(key) {
-    return storageRequest(
-      `/storage/${encodeURIComponent(key)}`,
-      {
-        method: "DELETE",
-      }
-    );
+  async delete(key) {
+    const res = await authedFetch(`/api/storage/${encodeURIComponent(key)}`, { method: "DELETE" });
+    if (!res.ok) throw new Error("Storage delete failed");
+    return res.json();
   },
-
-  async clear() {
-    const data = await storageRequest("/storage");
-
-    for (const key of data.keys || []) {
-      await storageRequest(
-        `/storage/${encodeURIComponent(key)}`,
-        {
-          method: "DELETE",
-        }
-      );
-    }
-  },
-
-  async keys(prefix = "") {
-    const data = await storageRequest(
-      `/storage?prefix=${encodeURIComponent(prefix)}`
-    );
-
-    return data.keys || [];
+  async list(prefix = "") {
+    const res = await authedFetch(`/api/storage?prefix=${encodeURIComponent(prefix)}`);
+    if (!res.ok) throw new Error("Storage list failed");
+    return res.json();
   },
 };
