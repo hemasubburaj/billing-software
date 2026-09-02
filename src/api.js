@@ -1,7 +1,7 @@
 // Talks to the Express/MongoDB backend. In dev, Vite proxies /api to the
 // backend (see vite.config.js); in production, set VITE_API_URL to your
 // deployed backend's URL (e.g. https://your-backend.onrender.com).
-const API_BASE = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "").replace(/\/api$/i, "");
 
 const TOKEN_KEY = "spark-billing-token";
 const USERNAME_KEY = "spark-billing-username";
