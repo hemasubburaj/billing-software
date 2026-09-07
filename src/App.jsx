@@ -4,31 +4,8 @@ import * as XLSX from "xlsx";
 import {
   LayoutDashboard, Receipt, Package, FileText, Plus, Trash2,
   Search, X, Printer, AlertTriangle, ArrowRight, Pencil, Users,
-  Truck, CalendarClock, BarChart3, Settings as SettingsIcon, Download, ShieldAlert, Building2, Menu
+  Truck, CalendarClock, BarChart3, Settings as SettingsIcon, Download, ShieldAlert, Building2
 } from "lucide-react";
-
-
-/* =========================================================
-   PERMANENT APP STORAGE
-   Data survives refresh / reload
-   ========================================================= */
-
-const appStorage = {
-  async get(key) {
-    const value = localStorage.getItem(key);
-    return value === null ? null : { value };
-  },
-
-  async set(key, value) {
-    localStorage.setItem(key, value);
-    return true;
-  },
-
-  async delete(key) {
-    localStorage.removeItem(key);
-    return true;
-  }
-};
 
 const KEYS = {
   products: "spark-billing-products",
@@ -42,20 +19,24 @@ const KEYS = {
   agents: "spark-billing-agents",
   companies: "spark-billing-companies",
   users: "spark-billing-users",
+  proformas: "spark-billing-proformas",
 };
 
+// Indian financial year label, e.g. "26-27" for FY starting Apr 2026
 function fyLabel() {
   const d = new Date();
   const y = d.getFullYear();
-  const startYear = d.getMonth() >= 3 ? y : y - 1;
+  const startYear = d.getMonth() >= 3 ? y : y - 1; // FY starts April
   return `${(startYear % 100).toString().padStart(2, "0")}-${((startYear + 1) % 100).toString().padStart(2, "0")}`;
 }
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-const fmt = (n) => "₹" + Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+const fmt = (n) => "\u20B9" + Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
 const todayStr = () => new Date().toISOString().slice(0, 10);
-const lineTotal = (item) =>
-  item.mode === "case" ? item.qty * (item.caseContent || 1) * item.price : item.qty * item.price;
+// Amount = Quantity x Sub Unit Contains x Sub Unit Rate
+// (loose/direct sale = set Sub Unit Contains to 1)
+const subUnitQty = (item) => (Number(item.qty) || 0) * (Number(item.subUnitContains) || 1);
+const lineTotal = (item) => subUnitQty(item) * (Number(item.subUnitRate) || 0);
 const daysUntil = (dateStr) => {
   if (!dateStr) return null;
   const diff = new Date(dateStr) - new Date(todayStr());
@@ -63,6 +44,7 @@ const daysUntil = (dateStr) => {
 };
 
 const CATEGORY_DEFAULT = "General";
+
 const DEFAULT_UNITS = ["Case", "Unit", "Pit", "Pcs", "Box", "Vandal", "Bundle", "PKT"];
 
 const seedProducts = [
@@ -75,7 +57,7 @@ const seedProducts = [
 ];
 
 const defaultSettings = {
-  businessName: "PHOENIX CRACKERS",
+  businessName: "Sparkline Traders",
   tagline: "Sivakasi's finest fireworks",
   address: "Sivakasi, Tamil Nadu",
   phone: "",
@@ -88,6 +70,7 @@ const defaultSettings = {
   seasonalMode: false,
   quoteCounter: 0,
   invoiceCounter: 0,
+  proformaCounter: 0,
 };
 
 function downloadXlsx(rows, filename, sheetName) {
@@ -120,31 +103,54 @@ export default function App() {
   const [agents, setAgents] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [users, setUsers] = useState([]);
+  const [proformas, setProformas] = useState([]);
   const [settings, setSettings] = useState(defaultSettings);
 
   const [editingName, setEditingName] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [cart, setCart] = useState([]);
   const [customerType, setCustomerType] = useState("wholesale");
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [discountPct, setDiscountPct] = useState(0);
+  const [taxType, setTaxType] = useState("intra");
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [selectedUserId, setSelectedUserId] = useState("");
-  const [gstRate, setGstRate] = useState("");
-  const [pfAmount, setPfAmount] = useState("");
+  const [extraCharges, setExtraCharges] = useState(0);
   const [productQuery, setProductQuery] = useState("");
   const [viewInvoice, setViewInvoice] = useState(null);
   const [viewQuotation, setViewQuotation] = useState(null);
+  const [viewProforma, setViewProforma] = useState(null);
+  const [syncError, setSyncError] = useState(false);
+
+  const CACHE_PREFIX = "spark-billing-cache::";
+  function cacheRead(key) {
+    try {
+      const raw = localStorage.getItem(CACHE_PREFIX + key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  function cacheWrite(key, value) {
+    try { localStorage.setItem(CACHE_PREFIX + key, JSON.stringify(value)); } catch (e) {}
+  }
 
   useEffect(() => {
     (async () => {
+      let anyError = false;
       const load = async (key, fallback) => {
         try {
-          const r = await appStorage.get(key);
-          if (r && r.value) return JSON.parse(r.value);
-        } catch (e) {}
+          const r = await window.storage.get(key);
+          if (r && r.value) {
+            const parsed = JSON.parse(r.value);
+            cacheWrite(key, parsed); // keep local backup in sync with the cloud copy
+            return parsed;
+          }
+        } catch (e) {
+          console.error(`Failed to load "${key}" from the cloud:`, e);
+          anyError = true;
+          const cached = cacheRead(key);
+          if (cached !== null) return cached; // fall back to last known-good local copy, not empty defaults
+        }
         return fallback;
       };
       setProducts(await load(KEYS.products, seedProducts));
@@ -157,14 +163,23 @@ export default function App() {
       setAgents(await load(KEYS.agents, []));
       setCompanies(await load(KEYS.companies, []));
       setUsers(await load(KEYS.users, []));
+      setProformas(await load(KEYS.proformas, []));
       setSettings(await load(KEYS.settings, defaultSettings));
+      setSyncError(anyError);
       setReady(true);
     })();
   }, []);
 
   async function persist(key, setter, next) {
     setter(next);
-    try { await appStorage.set(key, JSON.stringify(next)); } catch (e) {}
+    cacheWrite(key, next); // save locally first — never lost even if the cloud call fails
+    try {
+      await window.storage.set(key, JSON.stringify(next));
+      setSyncError(false);
+    } catch (e) {
+      console.error(`Failed to save "${key}" to the cloud:`, e);
+      setSyncError(true);
+    }
   }
   const persistProducts = (next) => persist(KEYS.products, setProducts, next);
   const persistCustomers = (next) => persist(KEYS.customers, setCustomers, next);
@@ -188,6 +203,7 @@ export default function App() {
 
   const persistCompaniesFn = (next) => persist(KEYS.companies, setCompanies, next);
   const persistUsersFn = (next) => persist(KEYS.users, setUsers, next);
+  const persistProformas = (next) => persist(KEYS.proformas, setProformas, next);
 
   function addCompany(company) { persistCompaniesFn([{ ...company, id: uid() }, ...companies]); }
   function updateCompany(id, patch) { persistCompaniesFn(companies.map((c) => (c.id === id ? { ...c, ...patch } : c))); }
@@ -216,55 +232,25 @@ export default function App() {
     );
   }, [products, productQuery]);
 
-  function addToCart(product) {
-    setCart((prev) => {
-      const existing = prev.find((c) => c.productId === product.id);
-      const price = customerType === "wholesale" ? product.wholesalePrice : product.retailPrice;
-      if (existing) return prev.map((c) => (c.productId === product.id ? { ...c, qty: c.qty + 1 } : c));
-      return [
-        ...prev,
-        {
-          productId: product.id, name: product.name, subunit: product.subunit || "Pcs",
-          caseContent: product.caseContent || 1, mode: "case", qty: 1, price, costPrice: product.costPrice || 0,
-        },
-      ];
-    });
+  function addCartLine(line) {
+    setCart((prev) => [...prev, { lineId: uid(), ...line }]);
   }
-  function updateCartQty(productId, qty) {
-    setCart((prev) => prev.map((c) => (c.productId === productId ? { ...c, qty: Math.max(1, qty) } : c)));
+  function updateCartField(lineId, field, value) {
+    setCart((prev) => prev.map((c) => (c.lineId === lineId ? { ...c, [field]: value } : c)));
   }
-  function updateCartMode(productId, mode) {
-    setCart((prev) => prev.map((c) => (c.productId === productId ? { ...c, mode } : c)));
+  function removeFromCart(lineId) {
+    setCart((prev) => prev.filter((c) => c.lineId !== lineId));
   }
-  function updateCartPrice(productId, price) {
-    setCart((prev) => prev.map((c) => (c.productId === productId ? { ...c, price: Math.max(0, price) } : c)));
-  }
-  function removeFromCart(productId) {
-    setCart((prev) => prev.filter((c) => c.productId !== productId));
-  }
-
-  useEffect(() => {
-    setCart((prev) =>
-      prev.map((c) => {
-        const prod = products.find((p) => p.id === c.productId);
-        if (!prod) return c;
-        return { ...c, price: customerType === "wholesale" ? prod.wholesalePrice : prod.retailPrice };
-      })
-    );
-  }, [customerType]);
 
   const subtotal = cart.reduce((s, c) => s + lineTotal(c), 0);
   const discountAmt = (subtotal * (Number(discountPct) || 0)) / 100;
-  const taxable = Math.max(0, subtotal - discountAmt);
-  const effectiveGstRate =
-    gstRate !== "" ? (Number(gstRate) || 0) : (Number(settings.gstRate) || 0);
-
-  const gstAmt =
-    settings.gstEnabled
-      ? (taxable * effectiveGstRate) / 100
-      : 0;
-  const pfAmt = Number(pfAmount) || 0;
-  const grandTotal = taxable + gstAmt + pfAmt;
+  const discountedTotal = Math.max(0, subtotal - discountAmt);
+  const taxable = discountedTotal;
+  const gstHalfRate = (Number(settings.gstRate) || 0) / 2;
+  const cgstAmt = settings.gstEnabled && taxType === "intra" ? (taxable * gstHalfRate) / 100 : 0;
+  const sgstAmt = settings.gstEnabled && taxType === "intra" ? (taxable * gstHalfRate) / 100 : 0;
+  const igstAmt = settings.gstEnabled && taxType === "inter" ? (taxable * (Number(settings.gstRate) || 0)) / 100 : 0;
+  const grandTotal = taxable + cgstAmt + sgstAmt + igstAmt + (Number(extraCharges) || 0);
 
   function nextQuoteNo() {
     const n = (settings.quoteCounter || 0) + 1;
@@ -274,10 +260,43 @@ export default function App() {
     const n = (settings.invoiceCounter || 0) + 1;
     return { no: `${n.toString().padStart(3, "0")}/INV${fyLabel()}`, counter: n };
   }
+  function nextProformaNo() {
+    const n = (settings.proformaCounter || 0) + 1;
+    return { no: `${n.toString().padStart(3, "0")}/PRO${fyLabel()}`, counter: n };
+  }
   function resetCounter(type) {
-    const patch = type === "quote" ? { quoteCounter: 0 } : { invoiceCounter: 0 };
+    const patch = type === "quote" ? { quoteCounter: 0 } : type === "proforma" ? { proformaCounter: 0 } : { invoiceCounter: 0 };
     const next = { ...settings, ...patch };
     persistSettings(next);
+  }
+
+  async function generateProformaFromInvoice(invoice, editedItems, editedDiscountPct, editedExtraCharges) {
+    const { no, counter } = nextProformaNo();
+    const sub = editedItems.reduce((s, it) => s + lineTotal(it), 0);
+    const discPct = Number(editedDiscountPct) || 0;
+    const discAmt = (sub * discPct) / 100;
+    const discountedTot = Math.max(0, sub - discAmt);
+    const taxable2 = discountedTot;
+    const half = (Number(settings.gstRate) || 0) / 2;
+    const cgst2 = invoice.taxType === "intra" && settings.gstEnabled ? (taxable2 * half) / 100 : 0;
+    const sgst2 = invoice.taxType === "intra" && settings.gstEnabled ? (taxable2 * half) / 100 : 0;
+    const igst2 = invoice.taxType === "inter" && settings.gstEnabled ? (taxable2 * (Number(settings.gstRate) || 0)) / 100 : 0;
+    const extra = Number(editedExtraCharges) || 0;
+    const total2 = taxable2 + cgst2 + sgst2 + igst2 + extra;
+
+    const proforma = {
+      id: uid(), proformaNo: no, date: todayStr(), sourceInvoiceId: invoice.id, sourceInvoiceNo: invoice.invoiceNo,
+      customerName: invoice.customerName, customerPhone: invoice.customerPhone, customerType: invoice.customerType,
+      agentId: invoice.agentId || null, agentName: invoice.agentName || "",
+      items: editedItems.map((it) => ({ ...it, total: lineTotal(it) })),
+      discountPct: discPct, subtotal: sub, discountAmt: discAmt, discountedTotal: discountedTot,
+      extraCharges: extra, gstEnabled: settings.gstEnabled, taxType: invoice.taxType,
+      cgstRate: half, sgstRate: half, igstRate: settings.gstRate,
+      cgstAmt: cgst2, sgstAmt: sgst2, igstAmt: igst2, total: total2, docType: "Original",
+    };
+    await persistProformas([proforma, ...proformas]);
+    await persistSettings({ ...settings, proformaCounter: counter });
+    setViewProforma(proforma);
   }
 
   async function saveQuotation() {
@@ -300,15 +319,15 @@ export default function App() {
       createdByUserId: staffUser ? staffUser.id : null,
       createdByUserName: staffUser ? staffUser.name : "",
       items: cart.map((c) => ({
-        productId: c.productId, name: c.name, subunit: c.subunit, caseContent: c.caseContent, mode: c.mode,
-        qty: c.qty, price: c.price, costPrice: c.costPrice || 0, total: lineTotal(c),
+        productId: c.productId, name: c.name, unit: c.unit || "Case", subunit: c.subunit,
+        subUnitContains: Number(c.subUnitContains) || 1, subUnitRate: Number(c.subUnitRate) || 0,
+        qty: Number(c.qty) || 0, costPrice: c.costPrice || 0, total: lineTotal(c),
       })),
       discountPct: Number(discountPct) || 0,
-      subtotal, discountAmt,
-      gstEnabled: settings.gstEnabled,
-      gstRate: effectiveGstRate,
-      gstAmt,
-      pfAmt,
+      subtotal, discountAmt, discountedTotal,
+      extraCharges: Number(extraCharges) || 0,
+      gstEnabled: settings.gstEnabled, taxType, gstRate: settings.gstRate, cgstRate: gstHalfRate, sgstRate: gstHalfRate, igstRate: settings.gstRate,
+      cgstAmt, sgstAmt, igstAmt,
       total: grandTotal,
       status: "pending",
       invoiceId: null,
@@ -317,7 +336,7 @@ export default function App() {
     await persistQuotations([quotation, ...quotations]);
     await persistSettings({ ...settings, quoteCounter: counter });
 
-    setCart([]); setCustomerName(""); setCustomerPhone(""); setDiscountPct(0); setSelectedAgentId(""); setSelectedUserId(""); setGstRate(""); setPfAmount("");
+    setCart([]); setCustomerName(""); setCustomerPhone(""); setDiscountPct(0); setExtraCharges(0); setSelectedAgentId(""); setSelectedUserId("");
     setViewQuotation(quotation);
   }
 
@@ -326,6 +345,7 @@ export default function App() {
     const total = quotation.total;
     const paid = amountPaidVal === "" || amountPaidVal == null ? total : Number(amountPaidVal) || 0;
     const due = Math.max(0, total - paid);
+
     let custId = null;
     let nextCustomers = customers;
     if (quotation.customerPhone) {
@@ -346,10 +366,9 @@ export default function App() {
       agentId: quotation.agentId || null, agentName: quotation.agentName || "",
       createdByUserId: quotation.createdByUserId || null, createdByUserName: quotation.createdByUserName || "",
       items: quotation.items, discountPct: quotation.discountPct, subtotal: quotation.subtotal, discountAmt: quotation.discountAmt,
-      gstEnabled: quotation.gstEnabled,
-      gstRate: quotation.gstRate,
-      gstAmt: quotation.gstAmt,
-      pfAmt: quotation.pfAmt || 0,
+      discountedTotal: quotation.discountedTotal, extraCharges: quotation.extraCharges || 0,
+      gstEnabled: quotation.gstEnabled, taxType: quotation.taxType, cgstRate: quotation.cgstRate, sgstRate: quotation.sgstRate, igstRate: quotation.igstRate,
+      cgstAmt: quotation.cgstAmt, sgstAmt: quotation.sgstAmt, igstAmt: quotation.igstAmt || 0,
       total, paymentMode: payMode, amountPaid: paid, balanceDue: due,
       quoteNo: quotation.quoteNo, returns: [], docType: "Original",
     };
@@ -359,7 +378,7 @@ export default function App() {
     const nextProducts = products.map((p) => {
       const item = quotation.items.find((i) => i.productId === p.id);
       if (!item) return p;
-      const subunitsSold = item.mode === "case" ? item.qty * (item.caseContent || 1) : item.qty;
+      const subunitsSold = (Number(item.qty) || 0) * (Number(item.subUnitContains) || 1);
       return { ...p, stock: Math.max(0, p.stock - subunitsSold) };
     });
     await persistProducts(nextProducts);
@@ -371,7 +390,7 @@ export default function App() {
   async function returnFromInvoice(invoice, returnItems) {
     const returnedValue = returnItems.reduce((s, r) => {
       const item = invoice.items[r.idx];
-      const unitTotal = item.mode === "case" ? item.price * (item.caseContent || 1) : item.price;
+      const unitTotal = (Number(item.subUnitContains) || 1) * (Number(item.subUnitRate) || 0);
       return s + r.qty * unitTotal;
     }, 0);
     if (returnedValue <= 0) return;
@@ -380,7 +399,7 @@ export default function App() {
       const match = returnItems.find((r) => invoice.items[r.idx].productId === p.id);
       if (!match) return p;
       const item = invoice.items[match.idx];
-      const subunitsBack = item.mode === "case" ? match.qty * (item.caseContent || 1) : match.qty;
+      const subunitsBack = match.qty * (Number(item.subUnitContains) || 1);
       return { ...p, stock: p.stock + subunitsBack };
     });
     await persistProducts(nextProducts);
@@ -461,14 +480,8 @@ export default function App() {
   return (
     <div className="app-root">
       <style>{globalStyles}</style>
-      <div className="mobile-topbar">
-        <button className="hamburger" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button>
-        <div className="mobile-brand disp">{settings.businessName}</div>
-      </div>
-      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
 
-      <div className={`sidebar ${sidebarOpen ? "open" : ""}`}>
-        <button className="sidebar-close" onClick={() => setSidebarOpen(false)}><X size={18} /></button>
+      <div className="sidebar">
         <div className="brand-row">
           <div className="brand-mark" />
           <div className="brand-name disp" onClick={() => setEditingName(true)} style={{ cursor: "pointer" }}>
@@ -494,16 +507,23 @@ export default function App() {
           ["purchases", "Purchases", Truck],
           ["advance", "Advance orders", CalendarClock],
           ["invoices", "Estimates (sales)", FileText],
+          ["proformas", "Proformas", FileText],
           ["reports", "Reports", BarChart3],
           ["settings", "Settings", SettingsIcon],
         ].map(([key, label, Icon]) => (
-          <button key={key} className={`navbtn ${tab === key ? "active" : ""}`} onClick={() => { setTab(key); setSidebarOpen(false); }}>
+          <button key={key} className={`navbtn ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
             <Icon size={16} /> {label}
           </button>
         ))}
       </div>
 
       <div className="main">
+        {syncError && (
+          <div className="licensebanner expired">
+            <ShieldAlert size={15} />
+            Couldn't reach the cloud just now — your changes are saved on this device and will sync once the connection is back. Don't clear your browser data until it syncs.
+          </div>
+        )}
         {licenseDays !== null && licenseDays <= 30 && (
           <div className={`licensebanner ${licenseDays < 0 ? "expired" : ""}`}>
             <ShieldAlert size={15} />
@@ -524,13 +544,12 @@ export default function App() {
         )}
         {tab === "bill" && (
           <BillTab {...{
-            products: filteredProducts, productQuery, setProductQuery, cart, addToCart, updateCartQty, updateCartMode, updateCartPrice, removeFromCart,
+            products, cart, addCartLine, updateCartField, removeFromCart,
             customerType, setCustomerType, customerName, setCustomerName, customerPhone, setCustomerPhone, customers,
-            discountPct, setDiscountPct, subtotal, discountAmt, taxable, gstAmt,
+            discountPct, setDiscountPct, extraCharges, setExtraCharges, subtotal, discountAmt, discountedTotal,
+            cgstAmt, sgstAmt, igstAmt, taxType, setTaxType,
             grandTotal, saveQuotation, settings, agents, selectedAgentId, setSelectedAgentId, addProduct, units,
             users, selectedUserId, setSelectedUserId,
-            gstRate, setGstRate,
-            pfAmount, setPfAmount,
           }} />
         )}
         {tab === "quotations" && (
@@ -555,7 +574,10 @@ export default function App() {
           <AdvanceOrdersTab {...{ products, advanceOrders, addAdvanceOrder, updateAdvanceStatus, deleteAdvanceOrder }} />
         )}
         {tab === "invoices" && (
-          <InvoicesTab {...{ invoices, setViewInvoice, returnFromInvoice }} />
+          <InvoicesTab {...{ invoices, setViewInvoice, generateProformaFromInvoice, units }} />
+        )}
+        {tab === "proformas" && (
+          <ProformasTab {...{ proformas, setViewProforma }} />
         )}
         {tab === "reports" && (
           <ReportsTab {...{ invoices, products, agents, users }} />
@@ -579,6 +601,13 @@ export default function App() {
           </div>
         </div>
       )}
+      {viewProforma && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 50 }}>
+          <div className="modal-backdrop" style={{ position: "fixed", inset: 0, minHeight: "auto" }}>
+            <ReceiptCard doc={viewProforma} kind="proforma" settings={settings} onClose={() => setViewProforma(null)} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -590,8 +619,8 @@ function DashboardTab({ totalQuotationAmount, totalSalesAmount, todayRevenue, wh
     const map = {};
     invoices.forEach((inv) => inv.items.forEach((it) => {
       const key = it.subunit || "Pcs";
-      if (!map[key]) map[key] = { subunit: key, caseQty: 0, subunitQty: 0, revenue: 0 };
-      if (it.mode === "case") map[key].caseQty += it.qty; else map[key].subunitQty += it.qty;
+      if (!map[key]) map[key] = { subunit: key, unitsSold: 0, revenue: 0 };
+      map[key].unitsSold += (Number(it.qty) || 0) * (Number(it.subUnitContains) || 1);
       map[key].revenue += it.total;
     }));
     return Object.values(map).sort((a, b) => b.revenue - a.revenue);
@@ -673,13 +702,12 @@ function DashboardTab({ totalQuotationAmount, totalSalesAmount, todayRevenue, wh
         <h3>Sales by subunit</h3>
         {salesBySubunit.length === 0 ? <div className="emptystate">No sales yet.</div> : (
           <table>
-            <thead><tr><th>Subunit</th><th>Case</th><th>Loose</th><th style={{ textAlign: "right" }}>Revenue</th></tr></thead>
+            <thead><tr><th>Subunit</th><th>Units sold</th><th style={{ textAlign: "right" }}>Revenue</th></tr></thead>
             <tbody>
               {salesBySubunit.map((s) => (
                 <tr key={s.subunit}>
                   <td><span className="badge ok">{s.subunit}</span></td>
-                  <td>{s.caseQty}</td>
-                  <td>{s.subunitQty}</td>
+                  <td>{s.unitsSold}</td>
                   <td style={{ textAlign: "right" }} className="mono">{fmt(s.revenue)}</td>
                 </tr>
               ))}
@@ -721,20 +749,31 @@ function DashboardTab({ totalQuotationAmount, totalSalesAmount, todayRevenue, wh
 
 function BillTab(props) {
   const {
-    products, productQuery, setProductQuery, cart, addToCart, updateCartQty, updateCartMode, updateCartPrice, removeFromCart,
+    products, cart, addCartLine, updateCartField, removeFromCart,
     customerType, setCustomerType, customerName, setCustomerName, customerPhone, setCustomerPhone, customers,
-    discountPct, setDiscountPct, subtotal, discountAmt, taxable, gstAmt, gstRate, setGstRate, grandTotal, saveQuotation, settings, agents, selectedAgentId, setSelectedAgentId, addProduct, units,
+    discountPct, setDiscountPct, extraCharges, setExtraCharges, subtotal, discountAmt, discountedTotal,
+    cgstAmt, sgstAmt, igstAmt, taxType, setTaxType,
+    grandTotal, saveQuotation, settings, agents, selectedAgentId, setSelectedAgentId, addProduct, units,
     users, selectedUserId, setSelectedUserId,
-    pfAmount, setPfAmount,
   } = props;
 
   const [showNewProduct, setShowNewProduct] = useState(false);
   const blankNewProduct = { name: "", category: "", subunit: (units && units[0]) || "Pcs", caseContent: 1, sku: "", wholesalePrice: 0, retailPrice: 0, costPrice: 0, stock: 0, lowStock: 5 };
   const [newProduct, setNewProduct] = useState(blankNewProduct);
 
+  const blankEntry = { productId: "", qty: "", unit: "Case", subunit: "", subUnitContains: "", subUnitRate: "" };
+  const [entry, setEntry] = useState(blankEntry);
+
+  function pickProduct(productId) {
+    const p = products.find((pr) => pr.id === productId);
+    if (!p) { setEntry(blankEntry); return; }
+    const rate = customerType === "wholesale" ? p.wholesalePrice : p.retailPrice;
+    setEntry({ productId, qty: 1, unit: "Case", subunit: p.subunit, subUnitContains: p.caseContent, subUnitRate: rate });
+  }
+
   function submitNewProduct() {
     if (!newProduct.name.trim()) return;
-    addProduct({
+    const created = addProduct({
       ...newProduct,
       category: newProduct.category.trim() || "General",
       caseContent: Number(newProduct.caseContent) || 1,
@@ -746,186 +785,197 @@ function BillTab(props) {
     });
     setNewProduct(blankNewProduct);
     setShowNewProduct(false);
+    if (created) pickProduct(created.id);
+  }
+
+  const entryProduct = products.find((p) => p.id === entry.productId);
+  const entrySubUnitQty = (Number(entry.qty) || 0) * (Number(entry.subUnitContains) || 1);
+  const entryAmount = entrySubUnitQty * (Number(entry.subUnitRate) || 0);
+
+  function addEntryToCart() {
+    if (!entryProduct || !entry.qty) return;
+    addCartLine({
+      productId: entryProduct.id, name: entryProduct.name, costPrice: entryProduct.costPrice || 0,
+      unit: entry.unit || "Case", subunit: entry.subunit || entryProduct.subunit,
+      subUnitContains: Number(entry.subUnitContains) || 1, subUnitRate: Number(entry.subUnitRate) || 0,
+      qty: Number(entry.qty) || 1,
+    });
+    setEntry(blankEntry);
   }
 
   return (
     <>
-      <div className="topbar"><div className="pagetitle disp">New quotation</div></div>
-      <div className="split-main">
-        <div>
-          <div className="segrow">
-            <button className={`segbtn wholesale ${customerType === "wholesale" ? "active wholesale" : ""}`} onClick={() => setCustomerType("wholesale")}>Wholesale</button>
-            <button className={`segbtn retail ${customerType === "retail" ? "active retail" : ""}`} onClick={() => setCustomerType("retail")}>Retail</button>
-          </div>
+      <div className="topbar">
+        <div className="pagetitle disp">New quotation</div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 11.5, color: "var(--ink-soft)" }}>Bill Value</div>
+          <div className="disp mono" style={{ fontSize: 24, fontWeight: 700, color: "var(--accent)" }}>{fmt(grandTotal)}</div>
+        </div>
+      </div>
 
-          <div className="formgrid" style={{ marginBottom: 14 }}>
-            <div className="field">
-              <label>Customer name</label>
-              <input list="cust-names" placeholder="Walk-in customer" value={customerName} onChange={(e) => setCustomerName(e.target.value)} />
-              <datalist id="cust-names">{customers.map((c) => <option key={c.id} value={c.name} />)}</datalist>
-            </div>
-            <div className="field">
-              <label>Phone (optional)</label>
-              <input list="cust-phones" placeholder="98xxxxxxxx" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} />
-              <datalist id="cust-phones">{customers.map((c) => <option key={c.id} value={c.phone} />)}</datalist>
-            </div>
-            <div className="field">
-              <label>Agent (optional)</label>
-              <select value={selectedAgentId} onChange={(e) => setSelectedAgentId(e.target.value)}>
-                <option value="">No agent</option>
-                {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-              </select>
-            </div>
-            <div className="field">
-              <label>Created by (staff)</label>
-              <select value={selectedUserId} onChange={(e) => setSelectedUserId(e.target.value)}>
-                <option value="">Not recorded</option>
-                {(users || []).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-              </select>
-            </div>
-            <div className="field">
-              <label>GST type</label>
-              <select value={gstRate} onChange={(e) => setGstRate(e.target.value)}>
-                <option value="intra">Intrastate</option>
-                <option value="inter">Interstate</option>
-              </select>
-            </div>
-          </div>
+      <div className="segrow">
+        <button className={`segbtn wholesale ${customerType === "wholesale" ? "active wholesale" : ""}`} onClick={() => setCustomerType("wholesale")}>Wholesale</button>
+        <button className={`segbtn retail ${customerType === "retail" ? "active retail" : ""}`} onClick={() => setCustomerType("retail")}>Retail</button>
+      </div>
 
-          <div className="panel" style={{ marginBottom: 0 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-              <h3 style={{ margin: 0 }}>Add products</h3>
-              <button className="iconbtn" title="Add new product" onClick={() => setShowNewProduct(!showNewProduct)}>
-                <Plus size={18} color="#D6431F" />
-              </button>
-            </div>
+      <div className="formgrid" style={{ marginBottom: 14, gridTemplateColumns: "repeat(4, 1fr)" }}>
+        <div className="field">
+          <label>Customer name</label>
+          <input list="cust-names" placeholder="Walk-in customer" value={customerName} onChange={(e) => setCustomerName(e.target.value)} />
+          <datalist id="cust-names">{customers.map((c) => <option key={c.id} value={c.name} />)}</datalist>
+        </div>
+        <div className="field">
+          <label>Phone (optional)</label>
+          <input list="cust-phones" placeholder="98xxxxxxxx" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} />
+          <datalist id="cust-phones">{customers.map((c) => <option key={c.id} value={c.phone} />)}</datalist>
+        </div>
+        <div className="field">
+          <label>Agent (optional)</label>
+          <select value={selectedAgentId} onChange={(e) => setSelectedAgentId(e.target.value)}>
+            <option value="">No agent</option>
+            {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Created by (staff)</label>
+          <select value={selectedUserId} onChange={(e) => setSelectedUserId(e.target.value)}>
+            <option value="">Not recorded</option>
+            {(users || []).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        </div>
+      </div>
 
-            {showNewProduct && (
-              <div style={{ background: "#FBF6EC", border: "0.5px solid var(--line)", borderRadius: 8, padding: 12, marginBottom: 12 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Customer asked for a new product — save it here, then search & add it below</div>
-                <div className="formgrid" style={{ marginBottom: 8 }}>
-                  <div className="field"><label>Product name</label><input value={newProduct.name} onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })} /></div>
-                  <div className="field"><label>Category</label><input value={newProduct.category} onChange={(e) => setNewProduct({ ...newProduct, category: e.target.value })} /></div>
-                  <div className="field"><label>Subunit</label>
-                    <select value={newProduct.subunit} onChange={(e) => setNewProduct({ ...newProduct, subunit: e.target.value })}>
-                      {(units || ["Pcs"]).map((u) => <option key={u} value={u}>{u}</option>)}
-                    </select>
-                  </div>
-                  <div className="field"><label>Case content</label><input type="number" value={newProduct.caseContent} onChange={(e) => setNewProduct({ ...newProduct, caseContent: e.target.value })} /></div>
-                  <div className="field"><label>Wholesale price</label><input type="number" value={newProduct.wholesalePrice} onChange={(e) => setNewProduct({ ...newProduct, wholesalePrice: e.target.value })} /></div>
-                  <div className="field"><label>Retail price</label><input type="number" value={newProduct.retailPrice} onChange={(e) => setNewProduct({ ...newProduct, retailPrice: e.target.value })} /></div>
-                  <div className="field"><label>Stock</label><input type="number" value={newProduct.stock} onChange={(e) => setNewProduct({ ...newProduct, stock: e.target.value })} /></div>
-                  <div className="field"><label>Cost price</label><input type="number" value={newProduct.costPrice} onChange={(e) => setNewProduct({ ...newProduct, costPrice: e.target.value })} /></div>
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button className="primarybtn" style={{ width: "auto", padding: "8px 16px" }} onClick={submitNewProduct}>Save to products</button>
-                  <button className="ghostbtn" onClick={() => setShowNewProduct(false)}>Cancel</button>
-                </div>
+      <div className="panel">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <h3 style={{ margin: 0 }}>Add product</h3>
+        </div>
+
+        {showNewProduct && (
+          <div style={{ background: "#FBF6EC", border: "0.5px solid var(--line)", borderRadius: 8, padding: 12, marginBottom: 12 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Customer asked for a new product — save it here, then pick it below</div>
+            <div className="formgrid" style={{ marginBottom: 8 }}>
+              <div className="field"><label>Product name</label><input value={newProduct.name} onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })} /></div>
+              <div className="field"><label>Category</label><input value={newProduct.category} onChange={(e) => setNewProduct({ ...newProduct, category: e.target.value })} /></div>
+              <div className="field"><label>Subunit</label>
+                <select value={newProduct.subunit} onChange={(e) => setNewProduct({ ...newProduct, subunit: e.target.value })}>
+                  {(units || ["Pcs"]).map((u) => <option key={u} value={u}>{u}</option>)}
+                </select>
               </div>
-            )}
-
-            <div className="searchwrap"><Search size={14} /><input placeholder="Search by name, category or SKU" value={productQuery} onChange={(e) => setProductQuery(e.target.value)} /></div>
-            <div className="prodlist">
-              {products.length === 0 ? <div className="emptystate">No products found.</div> : products.map((p) => {
-                const unitPrice = customerType === "wholesale" ? p.wholesalePrice : p.retailPrice;
-                return (
-                  <div className="prodrow" key={p.id} onClick={() => addToCart(p)}>
-                    <div>
-                      <div className="pname">{p.name}</div>
-                      <div className="pmeta">{p.category} • 1 Case = {p.caseContent} {p.subunit} • Stock: {p.stock} {p.subunit}</div>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span className="mono" style={{ fontSize: 12.5 }}>
-                        {fmt(unitPrice)}/{p.subunit} • {fmt(unitPrice * p.caseContent)}/Case
-                      </span>
-                      <Plus size={16} color="#D6431F" />
-                    </div>
-                  </div>
-                );
-              })}
+              <div className="field"><label>Case content</label><input type="number" value={newProduct.caseContent} onChange={(e) => setNewProduct({ ...newProduct, caseContent: e.target.value })} /></div>
+              <div className="field"><label>Wholesale price</label><input type="number" value={newProduct.wholesalePrice} onChange={(e) => setNewProduct({ ...newProduct, wholesalePrice: e.target.value })} /></div>
+              <div className="field"><label>Retail price</label><input type="number" value={newProduct.retailPrice} onChange={(e) => setNewProduct({ ...newProduct, retailPrice: e.target.value })} /></div>
+              <div className="field"><label>Stock</label><input type="number" value={newProduct.stock} onChange={(e) => setNewProduct({ ...newProduct, stock: e.target.value })} /></div>
+              <div className="field"><label>Cost price</label><input type="number" value={newProduct.costPrice} onChange={(e) => setNewProduct({ ...newProduct, costPrice: e.target.value })} /></div>
             </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="primarybtn" style={{ width: "auto", padding: "8px 16px" }} onClick={submitNewProduct}>Save to products</button>
+              <button className="ghostbtn" onClick={() => setShowNewProduct(false)}>Cancel</button>
+            </div>
+          </div>
+        )}
+
+        <div className="entrygrid">
+          <div className="field">
+            <label>Product</label>
+            <div style={{ display: "flex", gap: 6 }}>
+              <select value={entry.productId} onChange={(e) => pickProduct(e.target.value)} style={{ flex: 1 }}>
+                <option value="">Select</option>
+                {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <button className="iconbtn addicon" title="Add new product" onClick={() => setShowNewProduct(!showNewProduct)}><Plus size={18} /></button>
+            </div>
+          </div>
+          <div className="field"><label>Quantity</label><input type="number" min="0" placeholder="Quantity" value={entry.qty} onChange={(e) => setEntry({ ...entry, qty: e.target.value })} /></div>
+          <div className="field"><label>Unit</label>
+            <select value={entry.unit} onChange={(e) => setEntry({ ...entry, unit: e.target.value })}>
+              {(units || ["Case"]).map((u) => <option key={u} value={u}>{u}</option>)}
+            </select>
+          </div>
+          <div className="field"><label>Sub Unit</label>
+            <select value={entry.subunit} onChange={(e) => setEntry({ ...entry, subunit: e.target.value })}>
+              <option value="">Select</option>
+              {(units || []).map((u) => <option key={u} value={u}>{u}</option>)}
+            </select>
           </div>
         </div>
 
-        <div className="panel" style={{ marginBottom: 0 }}>
-          <h3>Quotation summary</h3>
-          {cart.length === 0 ? <div className="emptystate">Add products from the left to start a quotation.</div> : (
-            <table>
-              <thead><tr><th>Item</th><th style={{ width: 110 }}>Mode</th><th style={{ width: 90 }}>Case content qty</th><th style={{ width: 74 }}>Rate</th><th style={{ width: 26 }}></th></tr></thead>
-              <tbody>
-                {cart.map((c) => (
-                  <tr key={c.productId}>
-                    <td><div style={{ fontWeight: 500 }}>{c.name}</div><div style={{ fontSize: 11, color: "var(--ink-soft)" }}>{fmt(lineTotal(c))}</div></td>
-                    <td>
-                      <select value={c.mode} onChange={(e) => updateCartMode(c.productId, e.target.value)} style={{ padding: "5px 4px", fontSize: 11.5 }}>
-                        <option value="case">Case</option>
-                        <option value="subunit">{c.subunit}</option>
-                      </select>
-                      <div style={{ fontSize: 10, color: "var(--ink-soft)", marginTop: 2 }}>
-                        {c.mode === "case" ? `1 Case = ${c.caseContent} ${c.subunit}` : `Loose ${c.subunit}`}
-                      </div>
-                    </td>
-                    <td><input type="number" min="1" value={c.qty} onChange={(e) => updateCartQty(c.productId, parseInt(e.target.value || "1", 10))} style={{ padding: "5px 6px", fontSize: 12.5, width: "100%", boxSizing: "border-box" }} /></td>
-                    <td><input type="number" min="0" value={c.price} onChange={(e) => updateCartPrice(c.productId, parseFloat(e.target.value || "0"))} style={{ padding: "5px 6px", fontSize: 12.5, width: "100%", boxSizing: "border-box" }} /></td>
-                    <td><button className="iconbtn" onClick={() => removeFromCart(c.productId)}><Trash2 size={14} /></button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          <div className="fuse"><div className="dash" /><div className="dot" /><div className="dash" /></div>
-
-          <div className="field" style={{ marginBottom: 10 }}>
-            <label>Discount %</label>
-            <input type="number" min="0" max="100" value={discountPct} onChange={(e) => setDiscountPct(e.target.value)} />
+        <div className="entrygrid" style={{ marginTop: 10 }}>
+          <div className="field"><label>Sub Unit Contains</label><input type="number" min="0" placeholder="Sub Unit Contains" value={entry.subUnitContains} onChange={(e) => setEntry({ ...entry, subUnitContains: e.target.value })} /></div>
+          <div className="field"><label>Sub Unit Quantity</label><input value={entrySubUnitQty || ""} placeholder="Sub Unit Quantity" disabled /></div>
+          <div className="field"><label>Sub Unit Rate</label><input type="number" min="0" placeholder="Sub Unit Rate" value={entry.subUnitRate} onChange={(e) => setEntry({ ...entry, subUnitRate: e.target.value })} /></div>
+          <div className="field">
+            <label>Amount</label>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input value={entryAmount || ""} placeholder="Amount" disabled style={{ flex: 1 }} />
+              <button className="iconbtn addicon" title="Add to bill" onClick={addEntryToCart}><Plus size={18} /></button>
+            </div>
           </div>
+        </div>
+      </div>
 
-          <div className="totalrow"><span>Subtotal</span><span className="mono">{fmt(subtotal)}</span></div>
+      <div className="panel">
+        {cart.length === 0 ? <div className="emptystate">Add products above to start a quotation.</div> : (
+          <table className="billtable">
+            <thead>
+              <tr>
+                <th>S.No</th><th>Product</th><th style={{ width: 70 }}>Quantity</th><th style={{ width: 90 }}>Unit</th>
+                <th style={{ width: 110 }}>Sub Unit</th><th style={{ width: 90 }}>Sub Unit Contains</th>
+                <th style={{ width: 90 }}>Sub Unit Quantity</th><th style={{ width: 90 }}>Sub Unit Rate</th>
+                <th style={{ width: 90, textAlign: "right" }}>Amount</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {cart.map((c, idx) => (
+                <tr key={c.lineId}>
+                  <td>{idx + 1}</td>
+                  <td style={{ fontWeight: 500 }}>{c.name}</td>
+                  <td><input type="number" min="0" value={c.qty} onChange={(e) => updateCartField(c.lineId, "qty", parseFloat(e.target.value) || 0)} style={{ width: "100%", boxSizing: "border-box" }} /></td>
+                  <td>{c.unit}</td>
+                  <td>
+                    <select value={c.subunit} onChange={(e) => updateCartField(c.lineId, "subunit", e.target.value)}>
+                      {(units || []).map((u) => <option key={u} value={u}>{u}</option>)}
+                    </select>
+                  </td>
+                  <td><input type="number" min="0" value={c.subUnitContains} onChange={(e) => updateCartField(c.lineId, "subUnitContains", parseFloat(e.target.value) || 0)} style={{ width: "100%", boxSizing: "border-box" }} /></td>
+                  <td className="mono" style={{ color: "var(--ink-soft)" }}>{subUnitQty(c)}</td>
+                  <td><input type="number" min="0" value={c.subUnitRate} onChange={(e) => updateCartField(c.lineId, "subUnitRate", parseFloat(e.target.value) || 0)} style={{ width: "100%", boxSizing: "border-box" }} /></td>
+                  <td style={{ textAlign: "right" }} className="mono">{fmt(lineTotal(c))}</td>
+                  <td><button className="iconbtn" onClick={() => removeFromCart(c.lineId)}><Trash2 size={14} /></button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        <div className="fuse"><div className="dash" /><div className="dot" /><div className="dash" /></div>
+
+        <div className="split-two-14">
+          <div className="field"><label>Discount %</label><input type="number" min="0" max="100" value={discountPct} onChange={(e) => setDiscountPct(e.target.value)} /></div>
+          <div className="field"><label>Extra Charges</label><input type="number" min="0" value={extraCharges} onChange={(e) => setExtraCharges(e.target.value)} /></div>
+        </div>
+
+        <div style={{ maxWidth: 320, marginLeft: "auto" }}>
+          <div className="totalrow"><span>Sub Total</span><span className="mono">{fmt(subtotal)}</span></div>
           <div className="totalrow"><span>Discount</span><span className="mono">-{fmt(discountAmt)}</span></div>
-          {settings.gstEnabled && (
+          <div className="totalrow"><span>Discounted Total</span><span className="mono">{fmt(discountedTotal)}</span></div>
+          {settings.gstEnabled && taxType === "intra" && (
             <>
-              <div className="field" style={{ marginBottom: 10 }}>
-                <label>GST (%)</label>
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="0.01"
-                  value={gstRate}
-                  onChange={(e) => setGstRate(e.target.value)}
-                />
-              </div>
-
-              <div className="totalrow">
-                <span>GST</span>
-                <span className="mono">{fmt(gstAmt)}</span>
-              </div>
+              <div className="totalrow"><span>CGST ({(Number(settings.gstRate) || 0) / 2}%)</span><span className="mono">{fmt(cgstAmt)}</span></div>
+              <div className="totalrow"><span>SGST ({(Number(settings.gstRate) || 0) / 2}%)</span><span className="mono">{fmt(sgstAmt)}</span></div>
             </>
           )}
+          {settings.gstEnabled && taxType === "inter" && (
+            <div className="totalrow"><span>IGST ({settings.gstRate}%)</span><span className="mono">{fmt(igstAmt)}</span></div>
+          )}
+          <div className="totalrow"><span>Extra Charges</span><span className="mono">{fmt(Number(extraCharges) || 0)}</span></div>
+          <div className="totalrow grand"><span>Total</span><span className="mono">{fmt(grandTotal)}</span></div>
+        </div>
 
-          <div className="totalrow">
-  <span>
-    Packing & Forwarding (₹){" "}
-    <input
-      type="number"
-      min="0"
-      placeholder="0"
-      value={pfAmount}
-      onChange={(e) => setPfAmount(e.target.value)}
-      style={{ width: 60, padding: "2px 5px", fontSize: 11.5, textAlign: "right", marginLeft: 4 }}
-    />
-  </span>
-  <span className="mono">{fmt(Number(pfAmount) || 0)}</span>
-</div>
-<div className="totalrow grand"><span>Grand total</span><span className="mono">{fmt(grandTotal)}</span></div>
-
-          <div style={{ marginTop: 14 }}>
-            <button className="primarybtn" disabled={cart.length === 0} onClick={saveQuotation}>Save quotation <ArrowRight size={15} /></button>
-          </div>
-          <div style={{ fontSize: 11.5, color: "var(--ink-soft)", marginTop: 8 }}>
-            A quotation doesn't affect stock. Convert it to an estimate from the Quotations tab once the customer confirms.
-          </div>
+        <div style={{ marginTop: 14 }}>
+          <button className="primarybtn" disabled={cart.length === 0} onClick={saveQuotation}>Save quotation <ArrowRight size={15} /></button>
+        </div>
+        <div style={{ fontSize: 11.5, color: "var(--ink-soft)", marginTop: 8 }}>
+          A quotation doesn't affect stock. Convert it to an estimate from the Quotations tab once the customer confirms.
         </div>
       </div>
     </>
@@ -1540,30 +1590,71 @@ function AdvanceOrdersTab({ products, advanceOrders, addAdvanceOrder, updateAdva
   );
 }
 
-function InvoicesTab({ invoices, setViewInvoice, returnFromInvoice }) {
-  const [returningId, setReturningId] = useState(null);
-  const [returnQtys, setReturnQtys] = useState({});
+function ProformasTab({ proformas, setViewProforma }) {
+  function exportProformas() {
+    const rows = proformas.map((p) => ({
+      Proforma: p.proformaNo, Date: p.date, SourceEstimate: p.sourceInvoiceNo, Customer: p.customerName,
+      Total: p.total,
+    }));
+    downloadXlsx(rows, "proformas.xlsx", "Proformas");
+  }
+  return (
+    <>
+      <div className="topbar"><div className="pagetitle disp">Proformas</div>
+        <button className="ghostbtn" onClick={exportProformas} disabled={proformas.length === 0}><Download size={14} /> Export Excel</button>
+      </div>
+      <div className="panel">
+        {proformas.length === 0 ? (
+          <div className="emptystate">No proformas yet. Generate one from Estimates when you need to fix a mistake on a bill.</div>
+        ) : (
+          <table>
+            <thead><tr><th>Proforma</th><th>Date</th><th>From estimate</th><th>Customer</th><th style={{ textAlign: "right" }}>Total</th><th></th></tr></thead>
+            <tbody>
+              {proformas.map((p) => (
+                <tr key={p.id}>
+                  <td className="mono">{p.proformaNo}</td>
+                  <td>{p.date}</td>
+                  <td className="mono">{p.sourceInvoiceNo}</td>
+                  <td>{p.customerName}</td>
+                  <td style={{ textAlign: "right" }} className="mono">{fmt(p.total)}</td>
+                  <td><button className="iconbtn" onClick={() => setViewProforma(p)}><FileText size={14} /></button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
+  );
+}
+
+function InvoicesTab({ invoices, setViewInvoice, generateProformaFromInvoice, units }) {
+  const [editingId, setEditingId] = useState(null);
+  const [editItems, setEditItems] = useState([]);
+  const [editDiscountPct, setEditDiscountPct] = useState(0);
+  const [editExtraCharges, setEditExtraCharges] = useState(0);
 
   function exportInvoices() {
     const rows = invoices.map((inv) => ({
       Invoice: inv.invoiceNo, Date: inv.date, Customer: inv.customerName, Phone: inv.customerPhone,
       Type: inv.customerType, Subtotal: inv.subtotal, Discount: inv.discountAmt,
-      GST: inv.gstAmt || 0, Total: inv.total, PaymentMode: inv.paymentMode, BalanceDue: inv.balanceDue || 0,
+      CGST: inv.cgstAmt || 0, SGST: inv.sgstAmt || 0, Total: inv.total, PaymentMode: inv.paymentMode, BalanceDue: inv.balanceDue || 0,
     }));
     downloadXlsx(rows, "invoices.xlsx", "Invoices");
   }
 
-  function startReturn(inv) {
-    setReturningId(inv.id);
-    setReturnQtys({});
+  function startEditForProforma(inv) {
+    setEditingId(inv.id);
+    setEditItems(inv.items.map((it) => ({ ...it })));
+    setEditDiscountPct(inv.discountPct || 0);
+    setEditExtraCharges(inv.extraCharges || 0);
   }
-  function submitReturn(inv) {
-    const items = inv.items
-      .map((it, idx) => ({ idx, qty: Number(returnQtys[idx]) || 0 }))
-      .filter((r) => r.qty > 0);
-    if (items.length === 0) return;
-    returnFromInvoice(inv, items);
-    setReturningId(null);
+  function updateEditItem(idx, field, value) {
+    setEditItems((prev) => prev.map((it, i) => (i === idx ? { ...it, [field]: value } : it)));
+  }
+  function submitProforma(inv) {
+    generateProformaFromInvoice(inv, editItems, editDiscountPct, editExtraCharges);
+    setEditingId(null);
   }
 
   return (
@@ -1585,25 +1676,55 @@ function InvoicesTab({ invoices, setViewInvoice, returnFromInvoice }) {
                     <td style={{ textAlign: "right" }} className="mono">{fmt(inv.total)}</td>
                     <td>
                       <div style={{ display: "flex", gap: 4 }}>
-                        <button className="iconbtn" onClick={() => setViewInvoice(inv)}><FileText size={14} /></button>
-                        <button className="iconbtn" title="Return items" onClick={() => startReturn(inv)}><ArrowRight size={14} style={{ transform: "rotate(180deg)" }} /></button>
+                        <button className="iconbtn" title="View" onClick={() => setViewInvoice(inv)}><FileText size={14} /></button>
+                        <button className="iconbtn" title="Fix a mistake — convert to Proforma" onClick={() => startEditForProforma(inv)}><Pencil size={14} /></button>
                       </div>
                     </td>
                   </tr>
-                  {returningId === inv.id && (
+                  {editingId === inv.id && (
                     <tr><td colSpan={7}>
                       <div style={{ padding: "10px 4px" }}>
-                        <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Return items from {inv.invoiceNo}</div>
-                        {inv.items.map((it, idx) => (
-                          <div key={idx} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, fontSize: 12.5 }}>
-                            <span style={{ flex: 1 }}>{it.name} (sold {it.qty} {it.mode === "case" ? "Case" : it.subunit})</span>
-                            <input type="number" min="0" max={it.qty} placeholder="Return qty" style={{ width: 110 }}
-                              value={returnQtys[idx] || ""} onChange={(e) => setReturnQtys({ ...returnQtys, [idx]: e.target.value })} />
-                          </div>
-                        ))}
+                        <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>Fix a mistake in {inv.invoiceNo}</div>
+                        <div style={{ fontSize: 11.5, color: "var(--ink-soft)", marginBottom: 10 }}>
+                          Edit whatever's wrong below, then generate a corrected Proforma Invoice. The original estimate, stock and accounts are not changed.
+                        </div>
+                        <table className="billtable">
+                          <thead>
+                            <tr>
+                              <th>Product</th><th style={{ width: 70 }}>Quantity</th><th style={{ width: 90 }}>Unit</th>
+                              <th style={{ width: 110 }}>Sub Unit</th><th style={{ width: 90 }}>Sub Unit Contains</th>
+                              <th style={{ width: 90 }}>Sub Unit Rate</th><th style={{ width: 90, textAlign: "right" }}>Amount</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {editItems.map((it, idx) => (
+                              <tr key={idx}>
+                                <td style={{ fontWeight: 500 }}>{it.name}</td>
+                                <td><input type="number" min="0" value={it.qty} onChange={(e) => updateEditItem(idx, "qty", parseFloat(e.target.value) || 0)} style={{ width: "100%", boxSizing: "border-box" }} /></td>
+                                <td>
+                                  <select value={it.unit} onChange={(e) => updateEditItem(idx, "unit", e.target.value)}>
+                                    {(units || ["Case"]).map((u) => <option key={u} value={u}>{u}</option>)}
+                                  </select>
+                                </td>
+                                <td>
+                                  <select value={it.subunit} onChange={(e) => updateEditItem(idx, "subunit", e.target.value)}>
+                                    {(units || []).map((u) => <option key={u} value={u}>{u}</option>)}
+                                  </select>
+                                </td>
+                                <td><input type="number" min="0" value={it.subUnitContains} onChange={(e) => updateEditItem(idx, "subUnitContains", parseFloat(e.target.value) || 0)} style={{ width: "100%", boxSizing: "border-box" }} /></td>
+                                <td><input type="number" min="0" value={it.subUnitRate} onChange={(e) => updateEditItem(idx, "subUnitRate", parseFloat(e.target.value) || 0)} style={{ width: "100%", boxSizing: "border-box" }} /></td>
+                                <td style={{ textAlign: "right" }} className="mono">{fmt(lineTotal(it))}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <div className="formgrid" style={{ maxWidth: 400, marginTop: 10 }}>
+                          <div className="field"><label>Discount %</label><input type="number" min="0" max="100" value={editDiscountPct} onChange={(e) => setEditDiscountPct(e.target.value)} /></div>
+                          <div className="field"><label>Extra Charges</label><input type="number" min="0" value={editExtraCharges} onChange={(e) => setEditExtraCharges(e.target.value)} /></div>
+                        </div>
                         <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                          <button className="ghostbtn" onClick={() => submitReturn(inv)}>Confirm return</button>
-                          <button className="ghostbtn" onClick={() => setReturningId(null)}>Cancel</button>
+                          <button className="primarybtn" style={{ width: "auto", padding: "9px 18px" }} onClick={() => submitProforma(inv)}>Generate Proforma <ArrowRight size={15} /></button>
+                          <button className="ghostbtn" onClick={() => setEditingId(null)}>Cancel</button>
                         </div>
                       </div>
                     </td></tr>
@@ -1626,7 +1747,9 @@ function InvoicesTab({ invoices, setViewInvoice, returnFromInvoice }) {
 function ReportsTab({ invoices, products, agents, users }) {
   const topProducts = useMemo(() => {
     const map = {};
-    invoices.forEach((inv) => inv.items.forEach((it) => { map[it.name] = (map[it.name] || 0) + it.qty; }));
+    invoices.forEach((inv) => inv.items.forEach((it) => {
+      map[it.name] = (map[it.name] || 0) + (Number(it.qty) || 0) * (Number(it.subUnitContains) || 1);
+    }));
     return Object.entries(map).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty).slice(0, 6);
   }, [invoices]);
 
@@ -1649,8 +1772,8 @@ function ReportsTab({ invoices, products, agents, users }) {
     const map = {};
     invoices.forEach((inv) => inv.items.forEach((it) => {
       const key = it.subunit || "Pcs";
-      if (!map[key]) map[key] = { subunit: key, caseQty: 0, subunitQty: 0, revenue: 0 };
-      if (it.mode === "case") map[key].caseQty += it.qty; else map[key].subunitQty += it.qty;
+      if (!map[key]) map[key] = { subunit: key, unitsSold: 0, revenue: 0 };
+      map[key].unitsSold += (Number(it.qty) || 0) * (Number(it.subUnitContains) || 1);
       map[key].revenue += it.total;
     }));
     return Object.values(map).sort((a, b) => b.revenue - a.revenue);
@@ -1688,8 +1811,8 @@ function ReportsTab({ invoices, products, agents, users }) {
     const rows = invoices.map((inv) => ({
       "Inv No & Date": `${inv.invoiceNo} ${inv.date}`, Party: inv.customerName,
       TaxableValue: inv.subtotal - inv.discountAmt,
-      GST: inv.gstAmt || 0,
-      TotalAmount: inv.total,
+      CGST: inv.cgstAmt || 0, SGST: inv.sgstAmt || 0, IGST: inv.igstAmt || 0,
+      TaxAmount: (inv.cgstAmt || 0) + (inv.sgstAmt || 0) + (inv.igstAmt || 0), TotalAmount: inv.total,
     }));
     downloadXlsx(rows, "sales_tax_report.xlsx", "Sales Tax");
   }
@@ -1702,7 +1825,7 @@ function ReportsTab({ invoices, products, agents, users }) {
     downloadXlsx(rows, "stock_report.xlsx", "Stock");
   }
   function exportSubunitReport() {
-    const rows = salesBySubunit.map((s) => ({ Subunit: s.subunit, "Sold by case": s.caseQty, "Sold loose (subunit)": s.subunitQty, Revenue: s.revenue }));
+    const rows = salesBySubunit.map((s) => ({ Subunit: s.subunit, "Units sold": s.unitsSold, Revenue: s.revenue }));
     downloadXlsx(rows, "sales_by_subunit.xlsx", "Subunit sales");
   }
 
@@ -1772,13 +1895,12 @@ function ReportsTab({ invoices, products, agents, users }) {
               </ResponsiveContainer>
             </div>
             <table>
-              <thead><tr><th>Subunit</th><th>Sold by case</th><th>Sold loose</th><th style={{ textAlign: "right" }}>Revenue</th></tr></thead>
+              <thead><tr><th>Subunit</th><th>Units sold</th><th style={{ textAlign: "right" }}>Revenue</th></tr></thead>
               <tbody>
                 {salesBySubunit.map((s) => (
                   <tr key={s.subunit}>
                     <td><span className="badge ok">{s.subunit}</span></td>
-                    <td>{s.caseQty} Case</td>
-                    <td>{s.subunitQty} {s.subunit}</td>
+                    <td>{s.unitsSold} {s.subunit}</td>
                     <td style={{ textAlign: "right" }} className="mono">{fmt(s.revenue)}</td>
                   </tr>
                 ))}
@@ -1811,12 +1933,13 @@ function ReportsTab({ invoices, products, agents, users }) {
             </table>
           )}
         </div>
+
         <div className="panel" style={{ marginBottom: 0 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <h3>Staff performance</h3>
             <button className="ghostbtn" onClick={exportStaffPerformance} disabled={staffPerformance.length === 0}><Download size={14} /> Export</button>
           </div>
-          {staffPerformance.length === 0 ? <div className="emptystate">No staff-linked sales yet.</div> : (
+          {staffPerformance.length === 0 ? <div className="emptystate">No staff-attributed sales yet.</div> : (
             <table>
               <thead><tr><th>Staff</th><th>Bills</th><th style={{ textAlign: "right" }}>Sales</th></tr></thead>
               <tbody>
@@ -1835,287 +1958,370 @@ function ReportsTab({ invoices, products, agents, users }) {
 
       <div className="panel">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3>Stock value by category</h3>
+          <h3>Sales Tax Report</h3>
+          <button className="ghostbtn" onClick={exportSalesTax} disabled={invoices.length === 0}><Download size={14} /> Download Sales tax</button>
         </div>
-        {stockValueByCategory.length === 0 ? <div className="emptystate">No products yet.</div> : (
+        {invoices.length === 0 ? <div className="emptystate">No estimates yet.</div> : (
           <table>
-            <thead><tr><th>Category</th><th style={{ textAlign: "right" }}>Stock value</th></tr></thead>
+            <thead><tr><th>Inv.No & Date</th><th>Party</th><th>Taxable value</th><th>CGST</th><th>SGST</th><th>IGST</th><th>Tax amount</th><th style={{ textAlign: "right" }}>Total</th></tr></thead>
             <tbody>
-              {stockValueByCategory.map((s) => (
-                <tr key={s.category}>
-                  <td>{s.category}</td>
-                  <td style={{ textAlign: "right" }} className="mono">{fmt(s.value)}</td>
-                </tr>
-              ))}
+              {invoices.map((inv) => {
+                const taxAmt = (inv.cgstAmt || 0) + (inv.sgstAmt || 0) + (inv.igstAmt || 0);
+                return (
+                  <tr key={inv.id}>
+                    <td style={{ fontSize: 12 }}>{inv.invoiceNo}<br />{inv.date}</td>
+                    <td>{inv.customerName}</td>
+                    <td className="mono">{fmt(inv.subtotal - inv.discountAmt)}</td>
+                    <td className="mono">{fmt(inv.cgstAmt || 0)}</td>
+                    <td className="mono">{fmt(inv.sgstAmt || 0)}</td>
+                    <td className="mono">{fmt(inv.igstAmt || 0)}</td>
+                    <td className="mono">{fmt(taxAmt)}</td>
+                    <td style={{ textAlign: "right" }} className="mono">{fmt(inv.total)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
       </div>
 
       <div className="panel">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3>Sales tax report</h3>
-          <button className="ghostbtn" onClick={exportSalesTax} disabled={invoices.length === 0}><Download size={14} /> Export Excel</button>
-        </div>
-        {invoices.length === 0 ? <div className="emptystate">No sales yet.</div> : (
-          <div style={{ fontSize: 12, color: "var(--ink-soft)", marginTop: 8 }}>
-            Use the Export Excel button to download a full sales tax report with taxable value and GST.
-          </div>
-        )}
+        <h3>Stock value by category</h3>
+        <table>
+          <thead><tr><th>Category</th><th style={{ textAlign: "right" }}>Stock value</th></tr></thead>
+          <tbody>
+            {stockValueByCategory.map((c) => (
+              <tr key={c.category}><td>{c.category}</td><td style={{ textAlign: "right" }} className="mono">{fmt(c.value)}</td></tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </>
   );
 }
 
 function SettingsTab({ settings, setSettings, persistSettings, resetCounter }) {
+  const [local, setLocal] = useState(settings);
+  useEffect(() => setLocal(settings), [settings]);
+
+  function save() { setSettings(local); persistSettings(local); }
+
   return (
     <>
       <div className="topbar"><div className="pagetitle disp">Settings</div></div>
+
       <div className="panel">
-        <h3>Business details</h3>
-        <div className="formgrid">
-          <div className="field"><label>Business name</label><input value={settings.businessName} onChange={(e) => setSettings({ ...settings, businessName: e.target.value })} /></div>
-          <div className="field"><label>Tagline</label><input value={settings.tagline} onChange={(e) => setSettings({ ...settings, tagline: e.target.value })} /></div>
-          <div className="field"><label>Address</label><input value={settings.address} onChange={(e) => setSettings({ ...settings, address: e.target.value })} /></div>
-          <div className="field"><label>Phone</label><input value={settings.phone} onChange={(e) => setSettings({ ...settings, phone: e.target.value })} /></div>
-          <div className="field"><label>Email</label><input value={settings.email} onChange={(e) => setSettings({ ...settings, email: e.target.value })} /></div>
-          <div className="field"><label>Website</label><input value={settings.website} onChange={(e) => setSettings({ ...settings, website: e.target.value })} /></div>
+        <h3>Bill numbering</h3>
+        <div className="split-two-14">
+          <div>
+            <div style={{ fontSize: 12.5, marginBottom: 6 }}>Next quotation number: <span className="mono" style={{ fontWeight: 700 }}>{((settings.quoteCounter || 0) + 1).toString().padStart(3, "0")}/QUT{fyLabel()}</span></div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="ghostbtn" disabled>Continue from last</button>
+              <button className="ghostbtn" onClick={() => resetCounter("quote")}>Reset to 1</button>
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 12.5, marginBottom: 6 }}>Next estimate number: <span className="mono" style={{ fontWeight: 700 }}>{((settings.invoiceCounter || 0) + 1).toString().padStart(3, "0")}/INV{fyLabel()}</span></div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="ghostbtn" disabled>Continue from last</button>
+              <button className="ghostbtn" onClick={() => resetCounter("invoice")}>Reset to 1</button>
+            </div>
+          </div>
         </div>
-        <button className="primarybtn" style={{ width: "auto", padding: "9px 18px", marginTop: 8 }} onClick={() => persistSettings(settings)}>Save business details</button>
       </div>
 
       <div className="panel">
-        <h3>GST settings</h3>
+        <h3>Business (appears on printed bills)</h3>
         <div className="formgrid">
-          <div className="field"><label>GST enabled</label>
-            <select value={settings.gstEnabled ? "yes" : "no"} onChange={(e) => setSettings({ ...settings, gstEnabled: e.target.value === "yes" })}>
-              <option value="yes">Yes</option>
-              <option value="no">No</option>
-            </select>
-          </div>
-          <div className="field"><label>GST rate (%)</label><input type="number" value={settings.gstRate} onChange={(e) => setSettings({ ...settings, gstRate: e.target.value })} /></div>
+          <div className="field"><label>Business name</label><input value={local.businessName} onChange={(e) => setLocal({ ...local, businessName: e.target.value })} /></div>
+          <div className="field"><label>Tagline</label><input value={local.tagline} onChange={(e) => setLocal({ ...local, tagline: e.target.value })} placeholder="Sivakasi's finest fireworks" /></div>
+          <div className="field"><label>Address</label><input value={local.address} onChange={(e) => setLocal({ ...local, address: e.target.value })} /></div>
+          <div className="field"><label>Phone</label><input value={local.phone} onChange={(e) => setLocal({ ...local, phone: e.target.value })} /></div>
+          <div className="field"><label>Email</label><input value={local.email} onChange={(e) => setLocal({ ...local, email: e.target.value })} /></div>
+          <div className="field"><label>Website</label><input value={local.website} onChange={(e) => setLocal({ ...local, website: e.target.value })} /></div>
         </div>
-        <button className="primarybtn" style={{ width: "auto", padding: "9px 18px", marginTop: 8 }} onClick={() => persistSettings(settings)}>Save GST settings</button>
       </div>
 
       <div className="panel">
-        <h3>License</h3>
-        <div className="formgrid">
-          <div className="field"><label>License number</label><input value={settings.licenseNumber} onChange={(e) => setSettings({ ...settings, licenseNumber: e.target.value })} /></div>
-          <div className="field"><label>License expiry</label><input type="date" value={settings.licenseExpiry} onChange={(e) => setSettings({ ...settings, licenseExpiry: e.target.value })} /></div>
-        </div>
-        <button className="primarybtn" style={{ width: "auto", padding: "9px 18px", marginTop: 8 }} onClick={() => persistSettings(settings)}>Save license</button>
-        {daysUntil(settings.licenseExpiry) !== null && (
-          <div style={{ fontSize: 12, color: "var(--ink-soft)", marginTop: 8 }}>
-            License expires in {daysUntil(settings.licenseExpiry)} days.
-          </div>
+        <h3>GST</h3>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 12 }}>
+          <input type="checkbox" style={{ width: "auto" }} checked={local.gstEnabled} onChange={(e) => setLocal({ ...local, gstEnabled: e.target.checked })} />
+          Enable GST on bills
+        </label>
+        {local.gstEnabled && (
+          <>
+            <div className="field" style={{ maxWidth: 200 }}>
+              <label>GST rate %</label>
+              <input type="number" value={local.gstRate} onChange={(e) => setLocal({ ...local, gstRate: e.target.value })} />
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--ink-soft)", marginTop: 6 }}>
+              This rate is split into CGST + SGST (half each) on every bill.
+            </div>
+          </>
         )}
       </div>
 
       <div className="panel">
-        <h3>Reset counters</h3>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button className="ghostbtn" onClick={() => resetCounter("quote")}>Reset quotation counter</button>
-          <button className="ghostbtn" onClick={() => resetCounter("invoice")}>Reset invoice counter</button>
+        <h3>Fireworks license</h3>
+        <div className="formgrid">
+          <div className="field"><label>License number</label><input value={local.licenseNumber} onChange={(e) => setLocal({ ...local, licenseNumber: e.target.value })} /></div>
+          <div className="field"><label>Expiry date</label><input type="date" value={local.licenseExpiry} onChange={(e) => setLocal({ ...local, licenseExpiry: e.target.value })} /></div>
         </div>
-        <div style={{ fontSize: 12, color: "var(--ink-soft)", marginTop: 8 }}>
-          Current FY: {fyLabel()}. Counters reset will start from 001 again.
-        </div>
+        <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>A reminder banner shows on the dashboard once expiry is within 30 days.</div>
       </div>
+
+      <button className="primarybtn" style={{ width: "auto", padding: "10px 22px" }} onClick={save}>Save settings</button>
     </>
   );
 }
 
 function ReceiptCard({ doc, kind, settings, onClose }) {
+  const contactLine = [settings.website, settings.phone, settings.email].filter(Boolean).join("  |  ");
   const isEstimate = kind === "estimate";
+  const isProforma = kind === "proforma";
+  const paymentStatus = isEstimate ? (doc.balanceDue > 0 ? (doc.amountPaid > 0 ? "PARTIAL" : "PENDING") : "PAID") : null;
+  const docNo = isEstimate ? doc.invoiceNo : isProforma ? doc.proformaNo : doc.quoteNo;
+  const docLabel = isEstimate ? "Invoice No" : isProforma ? "Proforma No" : "Quote No";
+  const titleText = isEstimate ? "ESTIMATE BILL" : isProforma ? "PROFORMA INVOICE" : "QUOTATION";
+
   return (
-    <div style={{ background: "#fff", borderRadius: 10, padding: 20, maxWidth: 420, margin: "40px auto", boxShadow: "0 10px 30px rgba(0,0,0,0.15)" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+    <div className="estimate" onClick={(e) => e.stopPropagation()}>
+      <button className="iconbtn est-close" onClick={onClose}><X size={16} /></button>
+
+      <div className="est-header">
+        <div className="disp est-bizname">{settings.businessName}</div>
+        {settings.tagline && <div className="est-tagline">{settings.tagline.toUpperCase()}</div>}
+        {contactLine && <div className="est-contact">{contactLine}</div>}
+      </div>
+      <div className="est-rule" />
+
+      <div className="est-title">{titleText}</div>
+      {!isEstimate && doc.status === "converted" && (
+        <div style={{ textAlign: "center", marginBottom: 10 }}><span className="badge ok">Converted to estimate</span></div>
+      )}
+
+      <div className="est-parties">
         <div>
-          <div style={{ fontWeight: 700, fontSize: 16 }}>{settings.businessName}</div>
-          <div style={{ fontSize: 11.5, color: "#756B5D" }}>{settings.tagline}</div>
+          <div className="est-label">FROM</div>
+          <div className="est-name">{settings.businessName}</div>
+          <div className="est-line">{settings.address}</div>
+          {settings.phone && <div className="est-line">{settings.phone}</div>}
+          {settings.email && <div className="est-line">{settings.email}</div>}
+          {settings.website && <div className="est-line">{settings.website}</div>}
         </div>
-        <button className="iconbtn" onClick={onClose}><X size={16} /></button>
+        <div>
+          <div className="est-label">{isEstimate || isProforma ? "BILL TO" : "QUOTE FOR"}</div>
+          <div className="est-name">{doc.customerName}</div>
+          {doc.customerPhone && <div className="est-line">Mobile: {doc.customerPhone}</div>}
+          <span className={`badge ${doc.customerType}`} style={{ marginTop: 4 }}>{doc.customerType}</span>
+        </div>
       </div>
-      <div style={{ fontSize: 12, marginBottom: 10 }}>
-        <div style={{ fontWeight: 600 }}>{isEstimate ? "Estimate" : "Quotation"} {isEstimate ? doc.invoiceNo : doc.quoteNo}</div>
-        <div>Date: {doc.date}</div>
-        <div>Customer: {doc.customerName} {doc.customerPhone ? `• ${doc.customerPhone}` : ""}</div>
-        {doc.agentName && <div>Agent: {doc.agentName}</div>}
-        {doc.createdByUserName && <div>Created by: {doc.createdByUserName}</div>}
+
+      <div className="est-orderbar">
+        <span>{docLabel}: <strong>{docNo}</strong></span>
+        {doc.agentName && <span>Agent: <strong>{doc.agentName}</strong></span>}
+        <span>Date: <strong>{doc.date}</strong></span>
       </div>
-      <table style={{ width: "100%", fontSize: 11.5, marginBottom: 10 }}>
-        <thead>
-          <tr><th style={{ textAlign: "left" }}>Item</th><th style={{ textAlign: "right" }}>Qty</th><th style={{ textAlign: "right" }}>Rate</th><th style={{ textAlign: "right" }}>Amount</th></tr>
-        </thead>
+
+      <table className="est-table">
+        <thead><tr><th>SL.N</th><th>Product name</th><th>Qty</th><th>Unit</th><th>Sub Unit</th><th>Rate (Rs.)</th><th style={{ textAlign: "right" }}>Total</th></tr></thead>
         <tbody>
           {doc.items.map((it, idx) => (
             <tr key={idx}>
-              <td>{it.name}<div style={{ fontSize: 10, color: "#756B5D" }}>{it.mode === "case" ? `Case × ${it.qty} (${it.caseContent} subunits/case)` : `${it.subunit} × ${it.qty}`}</div></td>
-              <td style={{ textAlign: "right" }}>{it.qty}</td>
-              <td style={{ textAlign: "right" }}>{fmt(it.price)}</td>
+              <td>{idx + 1}</td>
+              <td>{it.name}</td>
+              <td>{it.qty}</td>
+              <td>{it.unit || "Case"}</td>
+              <td>{it.subunit}</td>
+              <td>{fmt(it.subUnitRate)}</td>
               <td style={{ textAlign: "right" }}>{fmt(it.total)}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      <div style={{ borderTop: "1px solid #E5DDCB", paddingTop: 8, fontSize: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between" }}><span>Subtotal</span><span>{fmt(doc.subtotal)}</span></div>
-        {doc.discountAmt > 0 && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Discount</span><span>-{fmt(doc.discountAmt)}</span></div>}
-        {doc.gstEnabled && <div style={{ display: "flex", justifyContent: "space-between" }}><span>GST ({doc.gstRate}%)</span><span>{fmt(doc.gstAmt || 0)}</span></div>}
-        <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, marginTop: 6 }}><span>Total</span><span>{fmt(doc.total)}</span></div>
-        {isEstimate && (
+
+      <div className="est-terms">
+        <div className="est-label" style={{ marginBottom: 6 }}>TERMS & CONDITIONS</div>
+        <ol>
+          <li>Product images are for reference only; actual items may vary.</li>
+          <li>Delivery charges are payable by customer to the transport provider.</li>
+          <li>Prices are valid at the time of quotation and subject to change.</li>
+        </ol>
+      </div>
+
+      <div className="est-totals">
+        <div className="est-totrow"><span>Subtotal</span><span>{fmt(doc.subtotal)}</span></div>
+        <div className="est-totrow"><span>Discount ({doc.discountPct}%)</span><span>-{fmt(doc.discountAmt)}</span></div>
+        {doc.discountedTotal != null && <div className="est-totrow"><span>Discounted Total</span><span>{fmt(doc.discountedTotal)}</span></div>}
+        {doc.gstEnabled && doc.taxType === "inter" ? (
+          <div className="est-totrow"><span>IGST ({doc.igstRate}%)</span><span>{fmt(doc.igstAmt)}</span></div>
+        ) : doc.gstEnabled && (
           <>
-            <div style={{ fontSize: 11, color: "#756B5D", marginTop: 6 }}>Payment: {doc.paymentMode} • Paid: {fmt(doc.amountPaid)} • Due: {fmt(doc.balanceDue)}</div>
+            <div className="est-totrow"><span>CGST ({doc.cgstRate}%)</span><span>{fmt(doc.cgstAmt)}</span></div>
+            <div className="est-totrow"><span>SGST ({doc.sgstRate}%)</span><span>{fmt(doc.sgstAmt)}</span></div>
           </>
         )}
+        {doc.extraCharges > 0 && <div className="est-totrow"><span>Extra Charges</span><span>{fmt(doc.extraCharges)}</span></div>}
+        <div className="est-totrow grand"><span>Grand total</span><span>{fmt(doc.total)}</span></div>
       </div>
-      <div style={{ fontSize: 10.5, color: "#756B5D", marginTop: 12, textAlign: "center" }}>
-        {settings.address} {settings.phone ? `• ${settings.phone}` : ""} {settings.email ? `• ${settings.email}` : ""}
+
+      <div className="est-rule" style={{ margin: "16px 0 10px" }} />
+      <div className="est-footer">
+        {isEstimate ? (
+          <>
+            Thank you for your business with {settings.businessName}<br />
+            Payment: {doc.paymentMode} ({paymentStatus}){doc.balanceDue > 0 && ` — Balance due ${fmt(doc.balanceDue)}`}
+          </>
+        ) : isProforma ? (
+          <>Revised bill — corrects {doc.sourceInvoiceNo}. For reference only; does not affect stock or accounts.</>
+        ) : (
+          <>This is a quotation, not a final bill. Convert it to an estimate once confirmed.</>
+        )}
       </div>
+
+      <button className="ghostbtn" style={{ width: "100%", justifyContent: "center", marginTop: 16 }} onClick={() => window.print()}>
+        <Printer size={14} /> Print
+      </button>
     </div>
   );
 }
 
 const globalStyles = `
-:root {
-  --bg: #F3EFE6; --card: #FFFFFF; --ink: #221F1A; --ink-soft: #7A7062; --line: #E7E0D0;
-  --brand: #D6431F; --brand-dark: #B7371A; --brand-soft: #FBE4DA; --ok: #2E7D32; --ok-soft: #E8F5E9;
-  --low: #A32D2D; --low-soft: #FDECEA; --radius: 12px; --shadow-sm: 0 1px 2px rgba(30,25,15,0.06);
-  --shadow-md: 0 4px 16px rgba(30,25,15,0.08); --sidebar-w: 232px;
-  --side-bg: #1C1A16; --side-bg-2: #262319; --side-text: #C9C2B4; --side-text-active: #FFFFFF;
-}
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap');
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--ink); font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
-.app-root { display: flex; min-height: 100vh; }
+.app-root {
+  --bg: #F7F3EC; --panel: #FFFFFF; --ink: #211C15; --ink-soft: #756B5D;
+  --accent: #D6431F; --accent-soft: #F5DCC9; --gold: #B07C1F; --gold-soft: #F1E3C4;
+  --green: #3F6B4C; --green-soft: #E1EBDF; --line: #E5DDCB; --sidebar: #211C15; --sidebar-soft: #B8AC98;
+  font-family: 'Inter', sans-serif; background: var(--bg); color: var(--ink);
+  display: flex; min-height: 100vh; width: 100%; box-sizing: border-box;
+}
+.disp { font-family: 'Space Grotesk', sans-serif; }
+.mono { font-family: 'JetBrains Mono', monospace; }
+.sidebar { width: 208px; background: var(--sidebar); color: var(--sidebar-soft); padding: 20px 14px; display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+.brand-row { display:flex; align-items:center; gap:8px; padding: 4px 10px 22px; }
+.brand-mark { width:10px; height:10px; border-radius:50%; background: var(--accent); box-shadow: 0 0 0 3px rgba(214,67,31,0.25); }
+.brand-name { color:#F7F3EC; font-size:15px; font-weight:700; letter-spacing:0.2px; }
+.navbtn { display:flex; align-items:center; gap:10px; padding: 9px 12px; border-radius:8px; cursor:pointer; font-size: 12.8px; font-weight: 500; color: var(--sidebar-soft); background: transparent; border: none; text-align:left; width:100%; }
+.navbtn:hover { background: rgba(247,243,236,0.08); color:#F7F3EC; }
+.navbtn.active { background: var(--accent); color: #FCEFE8; }
+.main { flex: 1; padding: 24px 28px; overflow-y: auto; }
+.topbar { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:22px; }
+.pagetitle { font-size:20px; font-weight:700; }
+.datepill { font-size:12px; color: var(--ink-soft); background: var(--panel); border:0.5px solid var(--line); padding:5px 10px; border-radius:20px; }
+.licensebanner { display:flex; align-items:center; gap:8px; background: var(--gold-soft); color:#7A5716; border-radius:8px; padding:9px 14px; font-size:12.5px; font-weight:600; margin-bottom:16px; }
+.licensebanner.expired { background:#F7DEDA; color:#A32D2D; }
+.cardrow { display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; margin-bottom: 20px; }
+.metric { background: var(--panel); border:0.5px solid var(--line); border-radius:10px; padding:14px 16px; }
+.metric .label { font-size:11.5px; color: var(--ink-soft); text-transform:uppercase; letter-spacing:0.4px; margin-bottom:6px; }
+.metric .value { font-size:21px; font-weight:700; }
+.panel { background: var(--panel); border:0.5px solid var(--line); border-radius:10px; padding:16px 18px; margin-bottom:16px; }
+.panel h3 { font-size:13.5px; font-weight:600; margin:0 0 12px; color: var(--ink); }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th { text-align:left; color: var(--ink-soft); font-weight:500; font-size:11.5px; text-transform:uppercase; letter-spacing:0.3px; padding:6px 8px; border-bottom:0.5px solid var(--line); }
+td { padding:9px 8px; border-bottom:0.5px solid var(--line); }
+tr:last-child td { border-bottom:none; }
+.badge { display:inline-block; padding:2px 9px; border-radius:20px; font-size:11px; font-weight:600; }
+.badge.wholesale { background: var(--gold-soft); color: #7A5716; }
+.badge.retail { background: var(--accent-soft); color: #9C371A; }
+.badge.low { background: #F7DEDA; color: #A32D2D; }
+.badge.ok { background: var(--green-soft); color: #2C5138; }
+.segrow { display:flex; gap:8px; margin-bottom:16px; }
+.segbtn { flex:1; padding:11px; border-radius:8px; border: 0.5px solid var(--line); background: var(--panel); font-weight:600; font-size:13.5px; cursor:pointer; color: var(--ink-soft); }
+.segbtn.active.wholesale { background: var(--gold); color:#FBF3E4; border-color: var(--gold); }
+.segbtn.active.retail { background: var(--accent); color:#FDECE4; border-color: var(--accent); }
+.field { margin-bottom:12px; }
+.field label { display:block; font-size:12px; color: var(--ink-soft); margin-bottom:4px; font-weight:500; }
+input, select { width:100%; padding:8px 10px; border-radius:7px; border:0.5px solid var(--line); background:#FBF9F4; font-size:13.5px; font-family:'Inter',sans-serif; color: var(--ink); }
+input:focus, select:focus { outline:none; border-color: var(--accent); }
+input[type=checkbox] { width:auto; }
+.searchwrap { position:relative; margin-bottom:10px; }
+.searchwrap svg { position:absolute; left:10px; top:10px; color: var(--ink-soft); }
+.searchwrap input { padding-left:32px; }
+.prodlist { max-height:220px; overflow-y:auto; border:0.5px solid var(--line); border-radius:8px; }
+.prodrow { display:flex; justify-content:space-between; align-items:center; padding:9px 12px; border-bottom:0.5px solid var(--line); font-size:13px; cursor:pointer; }
+.prodrow:last-child { border-bottom:none; }
+.prodrow:hover { background: #FBF6EC; }
+.prodrow .pname { font-weight:500; }
+.prodrow .pmeta { font-size:11.5px; color: var(--ink-soft); }
+.iconbtn { background:none; border:none; cursor:pointer; color: var(--ink-soft); padding:4px; border-radius:6px; display:flex; }
+.iconbtn:hover { background: var(--line); color: var(--ink); }
+.fuse { display:flex; align-items:center; gap:6px; margin: 14px 0; color: var(--line); }
+.fuse .dash { flex:1; border-top: 1.5px dashed var(--line); }
+.fuse .dot { width:5px; height:5px; border-radius:50%; background: var(--accent); }
+.totalrow { display:flex; justify-content:space-between; font-size:13.5px; padding:4px 0; color: var(--ink-soft); }
+.totalrow.grand { font-size:19px; font-weight:700; color: var(--ink); padding-top:8px; border-top: 0.5px solid var(--line); margin-top:6px; }
+.primarybtn { background: var(--accent); color:#FDECE4; border:none; padding:12px; border-radius:8px; font-weight:700; font-size:14px; cursor:pointer; width:100%; display:flex; align-items:center; justify-content:center; gap:6px; }
+.primarybtn:disabled { opacity:0.4; cursor:not-allowed; }
+.ghostbtn { background:transparent; border:0.5px solid var(--line); padding:9px 14px; border-radius:7px; font-size:13px; font-weight:600; cursor:pointer; color: var(--ink); display:flex; align-items:center; gap:6px; }
+.ghostbtn:hover { background: #F2ECDD; }
+.ghostbtn:disabled { opacity:0.4; cursor:not-allowed; }
+.modal-backdrop { position: relative; min-height: 100%; background: rgba(33,28,21,0.55); display:flex; align-items:center; justify-content:center; padding: 24px; border-radius: 12px; }
+.estimate { background:#FFFFFF; width: 640px; max-width: 100%; max-height: 90vh; overflow-y:auto; border-radius:6px; padding: 32px 36px; position:relative; font-family:'Inter', sans-serif; color: var(--ink); }
+.est-close { position:absolute; top:14px; right:14px; }
+.est-header { text-align:center; margin-bottom:10px; }
+.est-bizname { font-size:26px; font-weight:700; color: var(--accent); letter-spacing:0.5px; }
+.est-tagline { font-size:11px; letter-spacing:1.5px; color: var(--ink-soft); margin-top:2px; }
+.est-contact { font-size:11.5px; color: var(--green); margin-top:8px; }
+.est-rule { border-top: 2.5px solid var(--accent); }
+.est-title { text-align:center; font-size:15px; font-weight:700; letter-spacing:1px; margin: 18px 0; }
+.est-parties { display:grid; grid-template-columns: 1fr 1fr; gap:20px; margin-bottom:18px; }
+.est-label { font-size:11px; color: var(--ink-soft); letter-spacing:0.5px; margin-bottom:4px; }
+.est-name { font-weight:700; font-size:13.5px; margin-bottom:2px; }
+.est-line { font-size:12.5px; color: var(--ink); line-height:1.5; }
+.est-orderbar { display:flex; justify-content:space-between; background: var(--gold-soft); padding:9px 14px; border-radius:4px; font-size:12.5px; margin-bottom:14px; }
+.est-table { width:100%; border-collapse:collapse; font-size:12.5px; margin-bottom:16px; }
+.est-table th { background: var(--sidebar); color:#F1E9D8; text-align:left; padding:8px 10px; font-size:11px; letter-spacing:0.3px; }
+.est-table td { padding:8px 10px; border-bottom:0.5px solid var(--line); }
+.est-terms { font-size:11px; color: var(--ink-soft); margin-bottom:18px; }
+.est-terms ol { margin:0; padding-left:16px; line-height:1.7; }
+.est-totals { margin-left:auto; width:260px; }
+.est-totrow { display:flex; justify-content:space-between; font-size:12.5px; padding:4px 0; color: var(--ink-soft); }
+.est-totrow.grand { font-size:17px; font-weight:700; color: var(--accent); border-top: 1px solid var(--line); padding-top:8px; margin-top:4px; }
+.est-footer { text-align:center; font-size:11.5px; color: var(--ink-soft); line-height:1.7; }
+@media print { .est-close, .ghostbtn { display:none; } }
+.formgrid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
+.entrygrid { display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; }
+.addicon { background: var(--accent); color: #FDECE4; border-radius: 6px; padding: 6px; flex-shrink: 0; }
+.addicon:hover { background: #B93A1B; color: #FDECE4; }
+.billtable th { background: var(--sidebar); color: #F1E9D8; }
+.billtable input:disabled { background: #EFEAE0; color: var(--ink-soft); }
+.emptystate { text-align:center; padding: 30px 10px; color: var(--ink-soft); font-size:13px; }
 
-/* Sidebar - dark theme */
-.sidebar { width: var(--sidebar-w); flex-shrink: 0; background: linear-gradient(180deg, var(--side-bg), var(--side-bg-2)); border-right: 1px solid rgba(255,255,255,0.06); padding: 20px 12px; position: sticky; top: 0; height: 100vh; overflow-y: auto; z-index: 50; }
-.sidebar-close { display: none; }
-.brand-row { display: flex; align-items: center; gap: 10px; margin-bottom: 24px; padding: 0 8px; }
-.brand-mark { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, var(--brand), #F59A23); box-shadow: 0 2px 8px rgba(214,67,31,0.4); flex-shrink: 0; }
-.brand-name { font-weight: 800; font-size: 15px; letter-spacing: -0.2px; color: #FFF; }
-.navbtn { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 12px; border: 0; border-radius: 9px; background: transparent; color: var(--side-text); font-size: 13.5px; font-weight: 500; cursor: pointer; margin-bottom: 3px; transition: background 0.15s ease, color 0.15s ease; text-align: left; }
-.navbtn:hover { background: rgba(255,255,255,0.06); color: #FFF; }
-.navbtn.active { background: var(--brand); color: #FFF; font-weight: 700; box-shadow: 0 2px 8px rgba(214,67,31,0.35); }
-
-/* Mobile top bar - hidden on desktop */
-.mobile-topbar { display: none; }
-.sidebar-overlay { display: none; }
-
-/* Main */
-.main { flex: 1; padding: 22px 26px 50px; max-width: 100%; overflow-x: hidden; min-width: 0; }
-.topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 10px; }
-.pagetitle { font-weight: 800; font-size: 20px; letter-spacing: -0.3px; }
-.datepill { background: #FFF; border: 1px solid var(--line); padding: 7px 12px; border-radius: 999px; font-size: 12px; color: var(--ink-soft); box-shadow: var(--shadow-sm); }
-.licensebanner { display: flex; align-items: center; gap: 8px; background: #FFF5EB; border: 1px solid var(--brand-soft); color: var(--brand-dark); padding: 10px 12px; border-radius: 10px; font-size: 12.5px; margin-bottom: 14px; }
-.licensebanner.expired { background: var(--low-soft); border-color: #F5B7B1; color: #A32D2D; }
-
-/* Cards */
-.cardrow { display: grid; gap: 14px; margin-bottom: 16px; }
+/* Layout helper classes (replace fragile inline grid-template-columns) */
 .cardrow-5 { grid-template-columns: repeat(5, 1fr); }
 .cardrow-3 { grid-template-columns: repeat(3, 1fr); }
-.metric { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow-sm); transition: box-shadow 0.15s ease, transform 0.15s ease; }
-.metric:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
-.metric .label { font-size: 11.5px; color: var(--ink-soft); font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
-.metric .value { font-size: 19px; font-weight: 800; margin-top: 8px; letter-spacing: -0.3px; }
+.split-main { display:grid; grid-template-columns: 1.3fr 1fr; gap:18px; }
+.split-two { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+.split-two-14 { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
 
-/* Panels */
-.panel { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; box-shadow: var(--shadow-sm); overflow-x: auto; }
-.panel h3 { margin: 0 0 12px; font-size: 14.5px; font-weight: 700; }
-.split-two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-.split-main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; align-items: start; }
-
-/* Segmented buttons */
-.segrow { display: flex; gap: 8px; margin-bottom: 14px; }
-.segbtn { flex: 1; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: #FFF; font-size: 13.5px; font-weight: 600; cursor: pointer; transition: all 0.15s ease; color: var(--ink-soft); }
-.segbtn.wholesale.active { background: var(--ok-soft); border-color: #2E7D32; color: #2E7D32; }
-.segbtn.retail.active { background: var(--low-soft); border-color: #A32D2D; color: #A32D2D; }
-
-/* Forms */
-.formgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.field label { font-size: 11.5px; color: var(--ink-soft); font-weight: 600; }
-.field input, .field select { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; font-size: 13.5px; background: #FFF; color: var(--ink); transition: border-color 0.15s ease, box-shadow 0.15s ease; }
-.field input:focus, .field select:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px rgba(214,67,31,0.12); }
-
-/* Search */
-.searchwrap { position: relative; margin-bottom: 12px; }
-.searchwrap input { width: 100%; padding: 10px 12px 10px 34px; border: 1px solid var(--line); border-radius: 9px; font-size: 13.5px; }
-.searchwrap input:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px rgba(214,67,31,0.12); }
-.searchwrap svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); opacity: 0.5; }
-
-/* Product list */
-.prodlist { max-height: 400px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
-.prodrow { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); cursor: pointer; transition: background 0.12s ease; gap: 10px; flex-wrap: wrap; }
-.prodrow:last-child { border-bottom: 0; }
-.prodrow:hover { background: #FAF7F0; }
-.pname { font-weight: 600; font-size: 13.5px; }
-.pmeta { font-size: 11.5px; color: var(--ink-soft); margin-top: 3px; }
-
-/* Tables */
-table { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 480px; }
-th, td { padding: 10px 8px; border: 1px solid var(--line); text-align: left; }
-thead th { font-weight: 700; font-size: 11.5px; color: var(--ink); background: #F6F1E4; text-transform: uppercase; letter-spacing: 0.3px; }
-tbody tr:hover { background: #FBF8F1; }
-
-/* Badges */
-.badge { display: inline-block; padding: 4px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.2px; }
-.badge.ok { background: var(--ok-soft); color: #2E7D32; }
-.badge.low { background: var(--low-soft); color: #A32D2D; }
-.badge.wholesale { background: var(--ok-soft); color: #2E7D32; }
-.badge.retail { background: var(--low-soft); color: #A32D2D; }
-
-.emptystate { padding: 20px; text-align: center; color: var(--ink-soft); font-size: 12.5px; }
-
-/* Buttons */
-.primarybtn { width: 100%; padding: 12px; border: 0; border-radius: 10px; background: linear-gradient(135deg, var(--brand), var(--brand-dark)); color: #FFF; font-weight: 700; font-size: 13.5px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 3px 10px rgba(214,67,31,0.3); transition: transform 0.12s ease, box-shadow 0.12s ease; }
-.primarybtn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 5px 14px rgba(214,67,31,0.38); }
-.primarybtn:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
-.ghostbtn { padding: 9px 14px; border: 1px solid var(--line); border-radius: 9px; background: #FFF; font-size: 12.5px; font-weight: 600; color: var(--ink); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: background 0.12s ease, border-color 0.12s ease; white-space: nowrap; }
-.ghostbtn:hover:not(:disabled) { background: #F6F1E6; border-color: #D8CDB4; }
-.ghostbtn:disabled { opacity: 0.45; cursor: not-allowed; }
-.iconbtn { padding: 7px; border: 0; border-radius: 7px; background: transparent; cursor: pointer; color: var(--ink-soft); transition: background 0.12s ease, color 0.12s ease; }
-.iconbtn:hover { background: #F0E9D9; color: var(--ink); }
-
-/* Totals */
-.totalrow { display: flex; justify-content: space-between; align-items: center; font-size: 12.5px; padding: 7px 0; color: var(--ink-soft); flex-wrap: wrap; gap: 6px; }
-.totalrow.grand { font-weight: 800; font-size: 15.5px; color: var(--ink); border-top: 1.5px dashed var(--line); margin-top: 8px; padding-top: 10px; }
-.fuse { height: 1px; background: repeating-linear-gradient(90deg, var(--line) 0 12px, transparent 12px 18px); margin: 12px 0; }
-
-.modal-backdrop { background: rgba(20,16,10,0.45); display: flex; align-items: flex-start; justify-content: center; padding-top: 40px; backdrop-filter: blur(2px); overflow-y: auto; }
-
-/* ===== RESPONSIVE ===== */
-@media (max-width: 1024px) {
-  .cardrow-5 { grid-template-columns: repeat(3, 1fr); }
-  .split-main { grid-template-columns: 1fr; }
-  .sidebar { width: 200px; }
-  .main { padding: 18px 16px 40px; }
+/* ===== Responsive: tablet & mobile ===== */
+@media (max-width: 900px) {
+  .app-root { flex-direction: column; min-height: auto; }
+  .sidebar {
+    width: 100%; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center;
+    padding: 12px; gap: 6px; position: sticky; top: 0; z-index: 10;
+  }
+  .brand-row { width: 100%; padding: 0 4px 10px; }
+  .navbtn { width: auto; flex: 1 1 auto; justify-content: center; font-size: 11.5px; padding: 8px 8px; }
+  .main { padding: 16px; }
+  .topbar { flex-wrap: wrap; gap: 8px; }
+  .cardrow, .cardrow-5, .cardrow-3 { grid-template-columns: repeat(2, 1fr) !important; }
+  .split-main, .split-two, .split-two-14, .formgrid, .entrygrid {
+    grid-template-columns: 1fr !important;
+  }
+  table { display: block; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch; }
+  .estimate { width: 100%; padding: 22px 16px; }
+  .modal-backdrop { padding: 10px; }
+  .prodlist { max-height: 240px; }
+  .est-parties { grid-template-columns: 1fr !important; gap: 12px; }
 }
 
-@media (max-width: 768px) {
-  .app-root { flex-direction: column; }
-
-  .mobile-topbar { display: flex; align-items: center; gap: 12px; background: linear-gradient(135deg, var(--side-bg), var(--side-bg-2)); padding: 14px 16px; position: sticky; top: 0; z-index: 40; box-shadow: 0 2px 10px rgba(0,0,0,0.15); }
-  .hamburger { background: rgba(255,255,255,0.08); border: 0; border-radius: 8px; padding: 8px; color: #FFF; cursor: pointer; display: flex; align-items: center; }
-  .mobile-brand { color: #FFF; font-weight: 800; font-size: 15px; }
-
-  .sidebar-overlay { display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 55; }
-
-  .sidebar { position: fixed; top: 0; left: 0; height: 100vh; width: 250px; transform: translateX(-100%); transition: transform 0.25s ease; z-index: 60; box-shadow: 4px 0 20px rgba(0,0,0,0.3); }
-  .sidebar.open { transform: translateX(0); }
-  .sidebar-close { display: flex; align-items: center; justify-content: center; position: absolute; top: 14px; right: 12px; background: rgba(255,255,255,0.08); border: 0; border-radius: 7px; padding: 6px; color: #FFF; cursor: pointer; }
-
-  .main { padding: 14px 12px 40px; }
-  .cardrow-5, .cardrow-3 { grid-template-columns: repeat(2, 1fr); }
-  .split-two { grid-template-columns: 1fr; }
-  .formgrid { grid-template-columns: 1fr; }
-  .pagetitle { font-size: 17px; }
-  .panel { padding: 14px; }
-}
-
-@media (max-width: 480px) {
-  .cardrow-5, .cardrow-3 { grid-template-columns: 1fr; }
-  .metric .value { font-size: 17px; }
+@media (max-width: 520px) {
+  .cardrow, .cardrow-5, .cardrow-3 { grid-template-columns: 1fr !important; }
+  .segrow { flex-direction: column; }
+  .metric .value { font-size: 18px; }
+  .est-orderbar { flex-direction: column; gap: 4px; align-items: flex-start; }
+  .navbtn { font-size: 11px; padding: 7px; }
 }
 `;
