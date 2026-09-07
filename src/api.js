@@ -21,11 +21,14 @@ export function clearSession() {
   localStorage.removeItem(USERNAME_KEY);
 }
 
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function authedFetch(path, options = {}) {
   const token = getToken();
-  let res;
-  try {
-    res = await fetch(`${API_BASE}${path}`, {
+  const attempt = async () => {
+    return fetch(`${API_BASE}${path}`, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -33,9 +36,23 @@ async function authedFetch(path, options = {}) {
         ...(options.headers || {}),
       },
     });
-  } catch (networkErr) {
-    console.error(`Network error calling ${path} — is the backend running / VITE_API_URL correct?`, networkErr);
-    throw networkErr;
+  };
+
+  let res;
+  const maxRetries = 3;
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      res = await attempt();
+      break; // got a response (even an error status) — stop retrying
+    } catch (networkErr) {
+      if (i === maxRetries) {
+        console.error(`Network error calling ${path} after ${maxRetries + 1} attempts — is the backend running / VITE_API_URL correct?`, networkErr);
+        throw networkErr;
+      }
+      // Common on free-tier hosts waking from sleep or under a burst of requests — wait and retry.
+      console.warn(`Network error calling ${path}, retrying (${i + 1}/${maxRetries})…`, networkErr.message);
+      await wait(800 * (i + 1));
+    }
   }
   if (res.status === 401) {
     clearSession();
