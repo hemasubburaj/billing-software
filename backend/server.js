@@ -8,30 +8,70 @@ import storageRoutes from "./routes/storage.js";
 dotenv.config();
 
 const app = express();
-app.use(cors({
-  origin: true, // reflect the request's origin back (works for any frontend domain)
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-}));
-app.options("*", cors()); // make sure every preflight OPTIONS request gets a fast, explicit response
+
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://phoenixcrackers-billingsoftware.netlify.app",
+];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests without Origin (Postman, server-to-server, etc.)
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`CORS blocked: ${origin}`));
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+
 app.use(express.json({ limit: "5mb" }));
 
-app.get("/", (req, res) => res.json({ ok: true, message: "Spark Billing API is running. Try /api/health." }));
-app.get("/api/health", (req, res) => res.json({ ok: true }));
+// Health check
+app.get("/", (req, res) => {
+  res.json({
+    ok: true,
+    message: "Spark Billing API is running. Try /api/health.",
+  });
+});
+
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true });
+});
+
+// Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/storage", storageRoutes);
 
-// Anything else under /api that doesn't match a route above
-app.use("/api", (req, res) => res.status(404).json({ error: `No API route for ${req.method} ${req.originalUrl}` }));
+// Unknown API route
+app.use("/api", (req, res) => {
+  res.status(404).json({
+    error: `No API route for ${req.method} ${req.originalUrl}`,
+  });
+});
 
 const PORT = process.env.PORT || 4000;
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/spark-billing";
+
+const MONGODB_URI =
+  process.env.MONGODB_URI ||
+  "mongodb://127.0.0.1:27017/spark-billing";
 
 mongoose
   .connect(MONGODB_URI)
   .then(() => {
     console.log("Connected to MongoDB");
-    app.listen(PORT, () => console.log(`API server running on port ${PORT}`));
+
+    app.listen(PORT, () => {
+      console.log(`API server running on port ${PORT}`);
+    });
   })
   .catch((err) => {
     console.error("MongoDB connection error:", err.message);
