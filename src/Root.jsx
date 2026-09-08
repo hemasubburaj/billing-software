@@ -3,8 +3,6 @@ import App from "./App.jsx";
 import Login from "./Login.jsx";
 import { getToken, getUsername, clearSession, apiStorage } from "./api.js";
 
-// Wire window.storage to the backend-backed implementation so App.jsx
-// (which was written for Claude Artifacts) works unchanged.
 window.storage = apiStorage;
 
 export default function Root() {
@@ -15,19 +13,9 @@ export default function Root() {
   }
 
   return (
-    <div
-      style={{
-        width: "100%",
-        height: "100vh",
-        minHeight: "100vh",
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-      }}
-    >
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
       <div style={topBarStyle}>
         <span>Logged in as <strong>{getUsername()}</strong></span>
-
         <button
           style={logoutBtnStyle}
           onClick={() => {
@@ -38,16 +26,7 @@ export default function Root() {
           Log out
         </button>
       </div>
-
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          width: "100%",
-          display: "flex",
-          overflow: "hidden",
-        }}
-      >
+      <div style={{ flex: 1, display: "flex" }}>
         <App />
       </div>
     </div>
