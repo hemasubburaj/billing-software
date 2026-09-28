@@ -6,7 +6,43 @@ const router = Router();
 
 router.use(requireAuth);
 
+// GET /api/storage/bulk?keys=key1,key2,key3
+
+router.get("/bulk", async (req, res) => {
+  try {
+    const keysParam = String(req.query.keys || "");
+
+    const keys = keysParam
+      .split(",")
+      .map((key) => key.trim())
+      .filter(Boolean);
+
+    if (!keys.length) {
+      return res.json({ values: {} });
+    }
+
+    const items = await StorageItem.find({
+      userId: req.userId,
+      key: { $in: keys },
+    }).select("key value");
+
+    const values = {};
+
+    for (const item of items) {
+      values[item.key] = item.value;
+    }
+
+    res.json({ values });
+  } catch (error) {
+    console.error("Storage BULK GET error:", error);
+    res.status(500).json({
+      error: "Failed to get storage items",
+    });
+  }
+});
+
 // GET /api/storage/:key
+
 router.get("/:key", async (req, res) => {
   try {
     const item = await StorageItem.findOne({
