@@ -113,4 +113,9 @@ export const apiStorage = {
     if (!res.ok) throw new Error("Storage list failed");
     return res.json();
   },
+  async getAll(keys) {
+  const res = await authedFetch(`/api/storage/bulk?keys=${encodeURIComponent(keys.join(","))}`);
+  if (!res.ok) throw new Error("Storage bulk get failed");
+  return (await res.json()).values || {};
+},
 };
