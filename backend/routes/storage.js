@@ -5,6 +5,11 @@ import requireAuth from "../middleware/auth.js";
 const router = Router();
 router.use(requireAuth);
 
+async getAll(keys) {
+  const res = await authedFetch(`/api/storage/bulk?keys=${encodeURIComponent(keys.join(","))}`);
+  if (!res.ok) throw new Error("Storage bulk get failed");
+  return (await res.json()).values || {};
+},
 // GET /api/storage/:key
 router.get("/:key", async (req, res) => {
   const item = await StorageItem.findOne({ userId: req.userId, key: req.params.key });
