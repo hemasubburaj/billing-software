@@ -137,16 +137,35 @@ export default function App() {
   useEffect(() => {
     (async () => {
       let anyError = false;
+
+      // One request for everything (instead of 12) so free-tier rate limits aren't hit.
+      let bulk = null;
+      if (typeof window.storage.getAll === "function") {
+        try {
+          bulk = await window.storage.getAll(Object.values(KEYS));
+        } catch (e) {
+          console.error("Bulk load from the cloud failed:", e);
+          anyError = true;
+        }
+      }
+
       const load = async (key, fallback) => {
         try {
-          const r = await window.storage.get(key);
-          if (r && r.value) {
-            const parsed = JSON.parse(r.value);
+          let raw = null;
+          if (bulk) {
+            raw = bulk[key] ?? null; // bulk succeeded: a missing key just means "nothing saved yet"
+          } else if (typeof window.storage.getAll !== "function") {
+            const r = await window.storage.get(key);
+            raw = r && r.value ? r.value : null;
+          } else {
+            throw new Error("cloud unavailable"); // bulk failed -> use local cache below
+          }
+          if (raw) {
+            const parsed = JSON.parse(raw);
             cacheWrite(key, parsed); // keep local backup in sync with the cloud copy
             return parsed;
           }
         } catch (e) {
-          console.error(`Failed to load "${key}" from the cloud:`, e);
           anyError = true;
           const cached = cacheRead(key);
           if (cached !== null) return cached; // fall back to last known-good local copy, not empty defaults
@@ -426,6 +445,11 @@ export default function App() {
     persistProducts([...products, withId]);
     return withId;
   }
+  function addProducts(list) {
+    const withIds = list.map((p) => ({ ...p, id: uid() }));
+    persistProducts([...products, ...withIds]);
+    return withIds.length;
+  }
   function updateProduct(id, patch) { persistProducts(products.map((p) => (p.id === id ? { ...p, ...patch } : p))); }
   function deleteProduct(id) { persistProducts(products.filter((p) => p.id !== id)); }
 
@@ -562,7 +586,7 @@ export default function App() {
           <AgentsTab {...{ agents, addAgent, deleteAgent, invoices }} />
         )}
         {tab === "products" && (
-          <ProductsTab {...{ products, addProduct, updateProduct, deleteProduct, units }} />
+          <ProductsTab {...{ products, addProduct, addProducts, updateProduct, deleteProduct, units }} />
         )}
         {tab === "units" && (
           <UnitsTab {...{ units, addUnit, deleteUnit }} />
@@ -1320,7 +1344,7 @@ function CustomersTab({ customers, invoices, recordCustomerPayment, deleteCustom
   );
 }
 
-function ProductsTab({ products, addProduct, updateProduct, deleteProduct, units }) {
+function ProductsTab({ products, addProduct, addProducts, updateProduct, deleteProduct, units }) {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const blank = { name: "", category: "", subunit: units[0] || "Pcs", caseContent: 1, sku: "", wholesalePrice: 0, retailPrice: 0, costPrice: 0, stock: 0, lowStock: 5 };
@@ -1357,20 +1381,40 @@ function ProductsTab({ products, addProduct, updateProduct, deleteProduct, units
     const reader = new FileReader();
     reader.onload = (evt) => {
       try {
-        const wb = XLSX.read(evt.target.result, { type: "binary" });
-        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
-        rows.forEach((r) => {
-          if (!r.Name) return;
-          addProduct({
-            name: String(r.Name), category: String(r.Category || CATEGORY_DEFAULT), subunit: String(r.Subunit || units[0] || "Pcs"),
-            caseContent: Number(r.CaseContent) || 1, sku: String(r.SKU || ""), costPrice: Number(r.CostPrice) || 0,
-            wholesalePrice: Number(r.WholesalePrice) || 0, retailPrice: Number(r.RetailPrice) || 0,
-            stock: Number(r.Stock) || 0, lowStock: Number(r.LowStock) || 5,
-          });
-        });
-      } catch (err) { /* ignore malformed file */ }
+        const wb = XLSX.read(evt.target.result, { type: "array" });
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+        // match headers loosely: "Product Name", "product_name", "NAME" all work
+        const norm = (k) => String(k).toLowerCase().replace(/[^a-z]/g, "");
+        const pick = (row, ...names) => {
+          const key = Object.keys(row).find((k) => names.includes(norm(k)));
+          return key === undefined ? "" : row[key];
+        };
+        const list = rows
+          .map((r) => ({
+            name: String(pick(r, "name", "productname", "product")).trim(),
+            category: String(pick(r, "category") || CATEGORY_DEFAULT),
+            subunit: String(pick(r, "subunit", "unit") || units[0] || "Pcs"),
+            caseContent: Number(pick(r, "casecontent", "subunitcontains", "contains")) || 1,
+            sku: String(pick(r, "sku", "code")),
+            costPrice: Number(pick(r, "costprice", "cost")) || 0,
+            wholesalePrice: Number(pick(r, "wholesaleprice", "wholesale", "wholesalerate", "subunitrate", "rate")) || 0,
+            retailPrice: Number(pick(r, "retailprice", "retail", "retailrate", "mrp")) || 0,
+            stock: Number(pick(r, "stock", "qty", "quantity")) || 0,
+            lowStock: Number(pick(r, "lowstock")) || 5,
+          }))
+          .filter((p) => p.name);
+        if (list.length === 0) {
+          alert("No products found. Use 'Download template' and keep the header row (Name, Category, Subunit, CaseContent, SKU, CostPrice, WholesalePrice, RetailPrice, Stock, LowStock).");
+          return;
+        }
+        const n = addProducts(list);
+        alert(`${n} products uploaded.`);
+      } catch (err) {
+        console.error(err);
+        alert("Couldn't read that file. Please upload an .xlsx file made from the template.");
+      }
     };
-    reader.readAsBinaryString(file);
+    reader.readAsArrayBuffer(file);
     e.target.value = "";
   }
 
@@ -1380,7 +1424,7 @@ function ProductsTab({ products, addProduct, updateProduct, deleteProduct, units
         <div style={{ display: "flex", gap: 8 }}>
           <button className="ghostbtn" onClick={downloadTemplate}><Download size={14} /> Download template</button>
           <button className="ghostbtn" onClick={() => fileInputRef.current && fileInputRef.current.click()}>Upload products</button>
-          <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={handleUploadFile} />
+          <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }} onChange={handleUploadFile} />
           <button className="ghostbtn" onClick={downloadProducts} disabled={products.length === 0}><Download size={14} /> Download products</button>
           <button className="primarybtn" style={{ width: "auto", padding: "9px 16px" }} onClick={startNew}><Plus size={14} /> Add</button>
         </div>
